@@ -1,0 +1,3 @@
+target/
+# wasm-pack output, built and copied into the website
+web/

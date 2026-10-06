@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/isothrum-core", "crates/isothrum-wasm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+# Pinned to an Isoloom commit; for local work on both, add a [patch] to ../isoloom.
+isoloom-core = { git = "https://github.com/isoloom/isoloom", rev = "b61d15ef5de03da38d7ffda2334ba8de7b31864d" }
+isothrum-core = { path = "crates/isothrum-core" }
+indexmap = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
