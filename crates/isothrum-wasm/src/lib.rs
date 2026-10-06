@@ -65,11 +65,17 @@ pub fn plan(topology_json: &str) -> Plan {
         Err(e) => return Plan::failed(e.to_string()),
     };
 
-    let problems: Vec<String> = isoloom_core::validate(&spec).iter().map(|p| p.to_string()).collect();
+    let problems: Vec<String> = isoloom_core::validate(&spec)
+        .iter()
+        .map(|p| p.to_string())
+        .collect();
     // Isoloom's generators assume a valid spec (an unattached machine has no address to give,
     // for example), so nothing is generated until validation passes.
-    let (generated, skipped) =
-        if problems.is_empty() { isoloom_core::generate_all(&spec) } else { (vec![], vec![]) };
+    let (generated, skipped) = if problems.is_empty() {
+        isoloom_core::generate_all(&spec)
+    } else {
+        (vec![], vec![])
+    };
 
     let addresses = addresses(&spec);
     Plan {
@@ -78,7 +84,10 @@ pub fn plan(topology_json: &str) -> Plan {
         error: None,
         isoloom_yml: Some(yaml),
         problems,
-        files: generated.into_iter().map(|GeneratedFile { path, contents }| File { path, contents }).collect(),
+        files: generated
+            .into_iter()
+            .map(|GeneratedFile { path, contents }| File { path, contents })
+            .collect(),
         skipped: skipped.iter().map(|e| format!("{e:?}")).collect(),
     }
 }
@@ -116,7 +125,9 @@ pub fn bundle_target_bytes(topology_json: &str, target_dir: &str) -> Result<Vec<
 
 fn bundle_filtered(topology_json: &str, target_dir: Option<&str>) -> Result<Vec<u8>, String> {
     let plan = plan(topology_json);
-    let yaml = plan.isoloom_yml.ok_or_else(|| plan.error.unwrap_or_default())?;
+    let yaml = plan
+        .isoloom_yml
+        .ok_or_else(|| plan.error.unwrap_or_default())?;
     if !plan.problems.is_empty() {
         return Err(format!("fix the spec first: {}", plan.problems.join("; ")));
     }
@@ -125,14 +136,30 @@ fn bundle_filtered(topology_json: &str, target_dir: Option<&str>) -> Result<Vec<
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let mut add = |path: &str, contents: &str| -> Result<(), String> {
         zip.start_file(path, options).map_err(|e| e.to_string())?;
-        zip.write_all(contents.as_bytes()).map_err(|e| e.to_string())
+        zip.write_all(contents.as_bytes())
+            .map_err(|e| e.to_string())
     };
     let prefix = target_dir.map(|d| format!(".isoloom/{}/", d.trim_matches('/')));
-    let files: Vec<&File> = plan.files.iter().filter(|f| prefix.as_ref().is_none_or(|p| f.path.starts_with(p))).collect();
+    let files: Vec<&File> = plan
+        .files
+        .iter()
+        .filter(|f| prefix.as_ref().is_none_or(|p| f.path.starts_with(p)))
+        .collect();
     if files.is_empty() {
-        return Err(format!("this lab has no files for `{}`", target_dir.unwrap_or("any target")));
+        return Err(format!(
+            "this lab has no files for `{}`",
+            target_dir.unwrap_or("any target")
+        ));
     }
     add(SPEC_PATH, &yaml)?;
+    // Starter scripts for the VMs' provisioning steps, next to isoloom.yml where its paths point;
+    // a one-target download only gets those its files use (none for Docker).
+    let spec = isoloom_core::parse(&yaml).map_err(|e| e.to_string())?;
+    for s in isothrum_core::starters::starters(&spec) {
+        if target_dir.is_none() || files.iter().any(|f| f.contents.contains(&s.path)) {
+            add(&s.path, &s.contents)?;
+        }
+    }
     for f in files {
         add(&f.path, &f.contents)?;
     }
@@ -177,7 +204,13 @@ mod tests {
         assert!(plan.ok, "{:?}", plan.error);
         let yml = plan.isoloom_yml.unwrap();
         assert!(yml.contains("name: pair"));
-        assert!(plan.files.iter().any(|f| f.path.ends_with("docker/compose.yml")), "{:?}", plan.files.iter().map(|f| &f.path).collect::<Vec<_>>());
+        assert!(
+            plan.files
+                .iter()
+                .any(|f| f.path.ends_with("docker/compose.yml")),
+            "{:?}",
+            plan.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -187,14 +220,22 @@ mod tests {
             "b":{"kind":{"container":{"image":"alpine:3.20"}},"networks":{"office":20}}}}"#;
         let plan = plan(t);
         assert!(plan.ok, "{:?}", plan.error);
-        assert_eq!(plan.addresses["a"], vec![("office".to_string(), "10.10.1.10".to_string())]);
-        assert_eq!(plan.addresses["b"], vec![("office".to_string(), "10.10.1.20".to_string())]);
+        assert_eq!(
+            plan.addresses["a"],
+            vec![("office".to_string(), "10.10.1.10".to_string())]
+        );
+        assert_eq!(
+            plan.addresses["b"],
+            vec![("office".to_string(), "10.10.1.20".to_string())]
+        );
         assert!(plan.problems.is_empty(), "{:?}", plan.problems);
     }
 
     #[test]
     fn a_bad_topology_says_why() {
-        let plan = plan(r#"{"name":"x","nodes":{"a":{"kind":{"vm":{"os":"debian-12"}}}},"links":[{"a":{"node":"a","port":"e"},"b":{"node":"ghost","port":"e"}}]}"#);
+        let plan = plan(
+            r#"{"name":"x","nodes":{"a":{"kind":{"vm":{"os":"debian-12"}}}},"links":[{"a":{"node":"a","port":"e"},"b":{"node":"ghost","port":"e"}}]}"#,
+        );
         assert!(!plan.ok);
         assert!(plan.error.unwrap().contains("ghost"));
     }
@@ -209,7 +250,11 @@ mod tests {
             "links":[{"a":{"node":"a","port":"eth0"},"b":{"node":"b","port":"eth0"}}]}"#;
         let plan = plan(t);
         assert!(plan.ok);
-        assert!(plan.problems.iter().any(|p| p.contains("lonely")), "{:?}", plan.problems);
+        assert!(
+            plan.problems.iter().any(|p| p.contains("lonely")),
+            "{:?}",
+            plan.problems
+        );
         assert!(plan.files.is_empty());
         assert!(bundle_bytes(t).is_err());
     }
@@ -218,13 +263,25 @@ mod tests {
     fn a_target_bundle_holds_only_that_target() {
         // A target this lab does produce: the folder of its first generated file.
         let first = plan(TOPOLOGY).files[0].path.clone();
-        let target = first.trim_start_matches(".isoloom/").split('/').next().unwrap().to_string();
+        let target = first
+            .trim_start_matches(".isoloom/")
+            .split('/')
+            .next()
+            .unwrap()
+            .to_string();
         let bytes = bundle_target_bytes(TOPOLOGY, &target).unwrap();
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        let names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_string()).collect();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
         assert!(names.contains(&SPEC_PATH.to_string()));
         let prefix = format!(".isoloom/{target}/");
-        assert!(names.iter().all(|n| n == SPEC_PATH || n.starts_with(&prefix)), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .all(|n| n == SPEC_PATH || n.starts_with(&prefix)),
+            "{names:?}"
+        );
         assert!(names.len() > 1);
         assert!(bundle_target_bytes(TOPOLOGY, "no-such-target").is_err());
     }
@@ -236,5 +293,28 @@ mod tests {
         assert!(archive.by_name(SPEC_PATH).is_ok());
         assert!(archive.len() > 2);
     }
-}
 
+    #[test]
+    fn a_vm_lab_comes_with_its_provisioning_scripts() {
+        let names = |bytes: Vec<u8>| {
+            let mut a = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            (0..a.len())
+                .map(|i| a.by_index(i).unwrap().name().to_string())
+                .collect::<Vec<_>>()
+        };
+        let vms = r#"{"name":"vms","networks":{"lan":{"cidr":"10.10.1.0/24"}},"nodes":{
+            "db":{"kind":{"vm":{"os":"debian-12","provision":["provision/db.sh"]}},"networks":{"lan":null},"services":[{"port":5432}]},
+            "app":{"kind":{"vm":{"os":"debian-12","provision":["provision/app.sh"]}},"networks":{"lan":null},"access":true}}}"#;
+        let all = names(bundle_bytes(vms).unwrap());
+        assert!(all.contains(&"provision/db.sh".to_string()), "{all:?}");
+        assert!(
+            names(bundle_target_bytes(vms, "vagrant").unwrap())
+                .contains(&"provision/db.sh".to_string())
+        );
+        // The mixed lab's Docker download runs no provisioning: no script in it.
+        assert!(
+            !names(bundle_target_bytes(TOPOLOGY, "docker").unwrap())
+                .contains(&"provision/client.sh".to_string())
+        );
+    }
+}

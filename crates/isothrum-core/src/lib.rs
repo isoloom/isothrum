@@ -10,6 +10,8 @@
 //! Routing is not decided here: Isoloom routes between its networks through its own router, and
 //! `reach` rules are the topology's to add.
 
+pub mod starters;
+
 use indexmap::IndexMap;
 use isoloom_core::model::{DockerImpl, VmImpl};
 use isoloom_core::{Machine, Network, Reach, Service, Spec};
@@ -106,20 +108,42 @@ pub struct Endpoint {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompileError {
-    UnknownNode { link: usize, node: String },
-    SelfLink { link: usize, node: String },
-    PortInUse { node: String, port: String },
+    UnknownNode {
+        link: usize,
+        node: String,
+    },
+    SelfLink {
+        link: usize,
+        node: String,
+    },
+    PortInUse {
+        node: String,
+        port: String,
+    },
     TooManyLinks(usize),
     /// A node is on a LAN the lab doesn't have.
-    UnknownLan { node: String, lan: String },
+    UnknownLan {
+        node: String,
+        lan: String,
+    },
     /// A LAN's name is one the cables use (`link-<n>`).
     ReservedLanName(String),
     /// A LAN's CIDR isn't `a.b.c.d/n`.
-    BadCidr { lan: String, cidr: String },
+    BadCidr {
+        lan: String,
+        cidr: String,
+    },
     /// Two nodes ask for the same address on a LAN.
-    AddressTaken { lan: String, octet: u8, nodes: (String, String) },
+    AddressTaken {
+        lan: String,
+        octet: u8,
+        nodes: (String, String),
+    },
     /// A LAN has more machines than free addresses.
-    LanFull { lan: String, cidr: String },
+    LanFull {
+        lan: String,
+        cidr: String,
+    },
     Spec(String),
 }
 
@@ -127,7 +151,10 @@ impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CompileError::UnknownNode { link, node } => {
-                write!(f, "link {link} refers to node `{node}`, which the lab doesn't have")
+                write!(
+                    f,
+                    "link {link} refers to node `{node}`, which the lab doesn't have"
+                )
             }
             CompileError::SelfLink { link, node } => {
                 write!(f, "link {link} cables `{node}` to itself")
@@ -136,22 +163,36 @@ impl std::fmt::Display for CompileError {
                 write!(f, "port `{port}` of `{node}` already has a cable")
             }
             CompileError::TooManyLinks(n) => {
-                write!(f, "{n} cables don't fit in {}.{}.0.0/16", LINK_BASE[0], LINK_BASE[1])
+                write!(
+                    f,
+                    "{n} cables don't fit in {}.{}.0.0/16",
+                    LINK_BASE[0], LINK_BASE[1]
+                )
             }
             CompileError::UnknownLan { node, lan } => {
                 write!(f, "`{node}` is on LAN `{lan}`, which the lab doesn't have")
             }
             CompileError::ReservedLanName(lan) => {
-                write!(f, "`{lan}` is a name the cables use; call the LAN something else")
+                write!(
+                    f,
+                    "`{lan}` is a name the cables use; call the LAN something else"
+                )
             }
             CompileError::BadCidr { lan, cidr } => {
                 write!(f, "LAN `{lan}`: `{cidr}` isn't a block like 10.10.1.0/24")
             }
-            CompileError::AddressTaken { lan, octet, nodes: (a, b) } => {
+            CompileError::AddressTaken {
+                lan,
+                octet,
+                nodes: (a, b),
+            } => {
                 write!(f, "on LAN `{lan}`, `{a}` and `{b}` both ask for .{octet}")
             }
             CompileError::LanFull { lan, cidr } => {
-                write!(f, "LAN `{lan}` ({cidr}) has no free address left; use a larger block")
+                write!(
+                    f,
+                    "LAN `{lan}` ({cidr}) has no free address left; use a larger block"
+                )
             }
             CompileError::Spec(e) => write!(f, "{e}"),
         }
@@ -217,11 +258,20 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         };
         match &node.kind {
             Kind::Container { image, idle } => {
-                m.docker = Some(DockerImpl { image: Some(image.clone()), build: None, init: vec![], idle: *idle });
+                m.docker = Some(DockerImpl {
+                    image: Some(image.clone()),
+                    build: None,
+                    init: vec![],
+                    idle: *idle,
+                });
             }
             Kind::Router {} => unreachable!("routers are skipped above"),
             Kind::Vm { os, provision } => {
-                m.vm = Some(VmImpl { os: os.clone(), provision: provision.clone(), image: None });
+                m.vm = Some(VmImpl {
+                    os: os.clone(),
+                    provision: provision.clone(),
+                    image: None,
+                });
             }
         }
         machines.insert(name.clone(), m);
@@ -232,16 +282,27 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         if name.starts_with("link-") {
             return Err(CompileError::ReservedLanName(name.clone()));
         }
-        let prefix = prefix_of(&lan.cidr)
-            .ok_or_else(|| CompileError::BadCidr { lan: name.clone(), cidr: lan.cidr.clone() })?;
+        let prefix = prefix_of(&lan.cidr).ok_or_else(|| CompileError::BadCidr {
+            lan: name.clone(),
+            cidr: lan.cidr.clone(),
+        })?;
         networks.insert(
             name.clone(),
-            Network { cidr: lan.cidr.clone(), internet: lan.internet, gateway: None, docker: None },
+            Network {
+                cidr: lan.cidr.clone(),
+                internet: lan.internet,
+                gateway: None,
+                docker: None,
+            },
         );
 
         // Asked-for addresses first, then the others take the free ones in order.
         let mut taken: IndexMap<u8, String> = IndexMap::new();
-        for (node, n) in topo.nodes.iter().filter(|(node, _)| !routers.contains_key(*node)) {
+        for (node, n) in topo
+            .nodes
+            .iter()
+            .filter(|(node, _)| !routers.contains_key(*node))
+        {
             if let Some(Some(octet)) = n.networks.get(name) {
                 if let Some(other) = taken.insert(*octet, node.clone()) {
                     return Err(CompileError::AddressTaken {
@@ -254,18 +315,26 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
             }
         }
         let mut free = usable(prefix).filter(|o| !taken.contains_key(o));
-        for (node, n) in topo.nodes.iter().filter(|(node, _)| !routers.contains_key(*node)) {
+        for (node, n) in topo
+            .nodes
+            .iter()
+            .filter(|(node, _)| !routers.contains_key(*node))
+        {
             if let Some(None) = n.networks.get(name) {
-                let octet = free
-                    .next()
-                    .ok_or_else(|| CompileError::LanFull { lan: name.clone(), cidr: lan.cidr.clone() })?;
+                let octet = free.next().ok_or_else(|| CompileError::LanFull {
+                    lan: name.clone(),
+                    cidr: lan.cidr.clone(),
+                })?;
                 machines[node].networks.insert(name.clone(), octet);
             }
         }
     }
     for (node, n) in &topo.nodes {
         if let Some(lan) = n.networks.keys().find(|l| !topo.networks.contains_key(*l)) {
-            return Err(CompileError::UnknownLan { node: node.clone(), lan: lan.clone() });
+            return Err(CompileError::UnknownLan {
+                node: node.clone(),
+                lan: lan.clone(),
+            });
         }
     }
 
@@ -273,15 +342,24 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
     for (i, link) in topo.links.iter().enumerate() {
         for end in [&link.a, &link.b] {
             if !topo.nodes.contains_key(&end.node) {
-                return Err(CompileError::UnknownNode { link: i, node: end.node.clone() });
+                return Err(CompileError::UnknownNode {
+                    link: i,
+                    node: end.node.clone(),
+                });
             }
             if used_ports.contains(&(end.node.as_str(), end.port.as_str())) {
-                return Err(CompileError::PortInUse { node: end.node.clone(), port: end.port.clone() });
+                return Err(CompileError::PortInUse {
+                    node: end.node.clone(),
+                    port: end.port.clone(),
+                });
             }
             used_ports.push((end.node.as_str(), end.port.as_str()));
         }
         if link.a.node == link.b.node {
-            return Err(CompileError::SelfLink { link: i, node: link.a.node.clone() });
+            return Err(CompileError::SelfLink {
+                link: i,
+                node: link.a.node.clone(),
+            });
         }
 
         let net = link_network(i);
@@ -292,7 +370,12 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         }
         networks.insert(
             net.clone(),
-            Network { cidr, internet: false, gateway: None, docker: None },
+            Network {
+                cidr,
+                internet: false,
+                gateway: None,
+                docker: None,
+            },
         );
         for (end, octet) in [(&link.a.node, a_octet), (&link.b.node, b_octet)] {
             match routers.get_mut(end) {
@@ -310,7 +393,11 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         for from in nets {
             for to in nets {
                 if from != to && !reach.iter().any(|r| &r.from == from && &r.to == to) {
-                    reach.push(Reach { from: from.clone(), to: to.clone(), ports: vec![] });
+                    reach.push(Reach {
+                        from: from.clone(),
+                        to: to.clone(),
+                        ports: vec![],
+                    });
                 }
             }
         }
@@ -367,11 +454,19 @@ mod tests {
     use super::*;
 
     fn node(kind: Kind) -> Node {
-        Node { kind, access: false, services: vec![], networks: IndexMap::new() }
+        Node {
+            kind,
+            access: false,
+            services: vec![],
+            networks: IndexMap::new(),
+        }
     }
 
     fn lan(cidr: &str) -> Lan {
-        Lan { cidr: cidr.into(), internet: true }
+        Lan {
+            cidr: cidr.into(),
+            internet: true,
+        }
     }
 
     /// Two LANs, office and servers, with the router on both (at .254 on office).
@@ -382,28 +477,60 @@ mod tests {
         topo.networks.insert("servers".into(), lan("10.10.2.0/24"));
         topo.nodes["client"].networks.insert("office".into(), None);
         topo.nodes["server"].networks.insert("servers".into(), None);
-        topo.nodes["router"].networks.insert("office".into(), Some(254));
+        topo.nodes["router"]
+            .networks
+            .insert("office".into(), Some(254));
         topo.nodes["router"].networks.insert("servers".into(), None);
         topo
     }
 
     fn ep(node: &str, port: &str) -> Endpoint {
-        Endpoint { node: node.into(), port: port.into() }
+        Endpoint {
+            node: node.into(),
+            port: port.into(),
+        }
     }
 
     /// client -- router -- server, the router being a container and the server a VM.
     fn three_node() -> Topology {
         let mut nodes = IndexMap::new();
-        nodes.insert("client".into(), Node { access: true, ..node(Kind::Vm { os: "debian-12".into(), provision: vec!["provision/x.sh".into()] }) });
-        nodes.insert("router".into(), node(Kind::Container { image: "frrouting/frr:v8.5.2".into(), idle: false }));
-        nodes.insert("server".into(), node(Kind::Vm { os: "debian-12".into(), provision: vec!["provision/x.sh".into()] }));
+        nodes.insert(
+            "client".into(),
+            Node {
+                access: true,
+                ..node(Kind::Vm {
+                    os: "debian-12".into(),
+                    provision: vec!["provision/x.sh".into()],
+                })
+            },
+        );
+        nodes.insert(
+            "router".into(),
+            node(Kind::Container {
+                image: "frrouting/frr:v8.5.2".into(),
+                idle: false,
+            }),
+        );
+        nodes.insert(
+            "server".into(),
+            node(Kind::Vm {
+                os: "debian-12".into(),
+                provision: vec!["provision/x.sh".into()],
+            }),
+        );
         Topology {
             name: "three-node".into(),
             nodes,
             networks: IndexMap::new(),
             links: vec![
-                Link { a: ep("client", "eth0"), b: ep("router", "eth0") },
-                Link { a: ep("router", "eth1"), b: ep("server", "eth0") },
+                Link {
+                    a: ep("client", "eth0"),
+                    b: ep("router", "eth0"),
+                },
+                Link {
+                    a: ep("router", "eth1"),
+                    b: ep("server", "eth0"),
+                },
             ],
         }
     }
@@ -431,7 +558,15 @@ mod tests {
     fn nodes_keep_their_kind_and_access() {
         let spec = compile(&three_node()).unwrap();
         assert_eq!(spec.machines["client"].access, true);
-        assert_eq!(spec.machines["router"].docker.as_ref().unwrap().image.as_deref(), Some("frrouting/frr:v8.5.2"));
+        assert_eq!(
+            spec.machines["router"]
+                .docker
+                .as_ref()
+                .unwrap()
+                .image
+                .as_deref(),
+            Some("frrouting/frr:v8.5.2")
+        );
         assert_eq!(spec.machines["server"].vm.as_ref().unwrap().os, "debian-12");
         assert!(spec.machines["server"].docker.is_none());
     }
@@ -448,7 +583,15 @@ mod tests {
     #[test]
     fn the_yaml_leaves_defaults_out() {
         let yaml = to_yaml(&compile(&three_node()).unwrap()).unwrap();
-        for noise in ["null", "[]", "{}", "privileged", "read_only", "arch", "http"] {
+        for noise in [
+            "null",
+            "[]",
+            "{}",
+            "privileged",
+            "read_only",
+            "arch",
+            "http",
+        ] {
             assert!(!yaml.contains(noise), "`{noise}` in:\n{yaml}");
         }
         assert!(yaml.contains("internet: false"));
@@ -458,7 +601,9 @@ mod tests {
     #[test]
     fn machines_on_a_lan_take_its_free_addresses() {
         let mut topo = two_lans();
-        topo.nodes["router"].networks.insert("office".into(), Some(10));
+        topo.nodes["router"]
+            .networks
+            .insert("office".into(), Some(10));
         let spec = compile(&topo).unwrap();
         assert_eq!(spec.networks["office"].cidr, "10.10.1.0/24");
         // The router asked for .10 on office, so the client takes the next one.
@@ -485,7 +630,13 @@ mod tests {
         let problems = isoloom_core::validate(&spec);
         assert!(problems.is_empty(), "{problems:?}");
 
-        topo.nodes.insert("extra".into(), node(Kind::Container { image: "alpine:3.20".into(), idle: true }));
+        topo.nodes.insert(
+            "extra".into(),
+            node(Kind::Container {
+                image: "alpine:3.20".into(),
+                idle: true,
+            }),
+        );
         topo.nodes["extra"].networks.insert("office".into(), None);
         assert!(matches!(compile(&topo), Err(CompileError::LanFull { .. })));
     }
@@ -494,15 +645,29 @@ mod tests {
     fn lan_mistakes_say_what_to_fix() {
         let mut topo = two_lans();
         topo.nodes["client"].networks.insert("dmz".into(), None);
-        assert_eq!(compile(&topo), Err(CompileError::UnknownLan { node: "client".into(), lan: "dmz".into() }));
+        assert_eq!(
+            compile(&topo),
+            Err(CompileError::UnknownLan {
+                node: "client".into(),
+                lan: "dmz".into()
+            })
+        );
 
         let mut topo = two_lans();
-        topo.nodes["client"].networks.insert("office".into(), Some(254));
-        assert!(matches!(compile(&topo), Err(CompileError::AddressTaken { octet: 254, .. })));
+        topo.nodes["client"]
+            .networks
+            .insert("office".into(), Some(254));
+        assert!(matches!(
+            compile(&topo),
+            Err(CompileError::AddressTaken { octet: 254, .. })
+        ));
 
         let mut topo = two_lans();
         topo.networks.insert("link-0".into(), lan("10.10.9.0/24"));
-        assert_eq!(compile(&topo), Err(CompileError::ReservedLanName("link-0".into())));
+        assert_eq!(
+            compile(&topo),
+            Err(CompileError::ReservedLanName("link-0".into()))
+        );
 
         let mut topo = two_lans();
         topo.networks["office"].cidr = "office".into();
@@ -513,7 +678,10 @@ mod tests {
     fn lans_and_cables_mix() {
         let mut topo = two_lans();
         topo.nodes["router"].networks.insert("office".into(), None);
-        topo.links.push(Link { a: ep("client", "eth1"), b: ep("server", "eth1") });
+        topo.links.push(Link {
+            a: ep("client", "eth1"),
+            b: ep("server", "eth1"),
+        });
         let spec = compile(&topo).unwrap();
         assert_eq!(spec.networks.len(), 3);
         assert_eq!(spec.machines["client"].networks["link-0"], 2);
@@ -525,7 +693,10 @@ mod tests {
     #[test]
     fn an_idle_container_is_kept_running() {
         let mut topo = three_node();
-        topo.nodes["router"].kind = Kind::Container { image: "alpine:3.20".into(), idle: true };
+        topo.nodes["router"].kind = Kind::Container {
+            image: "alpine:3.20".into(),
+            idle: true,
+        };
         let spec = compile(&topo).unwrap();
         assert!(spec.machines["router"].docker.as_ref().unwrap().idle);
         assert!(to_yaml(&spec).unwrap().contains("idle: true"));
@@ -540,7 +711,11 @@ mod tests {
         // Not a machine, and no address taken on its LANs.
         assert!(!spec.machines.contains_key("router"));
         assert_eq!(spec.machines["client"].networks["office"], 10);
-        let pairs: Vec<(&str, &str)> = spec.reach.iter().map(|r| (r.from.as_str(), r.to.as_str())).collect();
+        let pairs: Vec<(&str, &str)> = spec
+            .reach
+            .iter()
+            .map(|r| (r.from.as_str(), r.to.as_str()))
+            .collect();
         assert_eq!(pairs, vec![("office", "servers"), ("servers", "office")]);
         let problems = isoloom_core::validate(&spec);
         assert!(problems.is_empty(), "{problems:?}");
@@ -551,11 +726,18 @@ mod tests {
         let mut topo = two_lans();
         topo.nodes["router"].kind = Kind::Router {};
         topo.nodes["router"].networks.shift_remove("office");
-        topo.links.push(Link { a: ep("router", "eth1"), b: ep("client", "eth1") });
+        topo.links.push(Link {
+            a: ep("router", "eth1"),
+            b: ep("client", "eth1"),
+        });
         let spec = compile(&topo).unwrap();
         assert_eq!(spec.networks["link-0"].cidr, "10.200.0.0/29");
         assert_eq!(spec.machines["client"].networks["link-0"], 3);
-        assert!(spec.reach.iter().any(|r| r.from == "link-0" && r.to == "servers"));
+        assert!(
+            spec.reach
+                .iter()
+                .any(|r| r.from == "link-0" && r.to == "servers")
+        );
         let problems = isoloom_core::validate(&spec);
         assert!(problems.is_empty(), "{problems:?}");
     }
@@ -563,25 +745,49 @@ mod tests {
     #[test]
     fn a_port_carries_one_cable() {
         let mut topo = three_node();
-        topo.links.push(Link { a: ep("client", "eth0"), b: ep("server", "eth1") });
+        topo.links.push(Link {
+            a: ep("client", "eth0"),
+            b: ep("server", "eth1"),
+        });
         assert_eq!(
             compile(&topo),
-            Err(CompileError::PortInUse { node: "client".into(), port: "eth0".into() })
+            Err(CompileError::PortInUse {
+                node: "client".into(),
+                port: "eth0".into()
+            })
         );
     }
 
     #[test]
     fn a_cable_needs_two_known_nodes() {
         let mut topo = three_node();
-        topo.links.push(Link { a: ep("client", "eth1"), b: ep("ghost", "eth0") });
-        assert_eq!(compile(&topo), Err(CompileError::UnknownNode { link: 2, node: "ghost".into() }));
+        topo.links.push(Link {
+            a: ep("client", "eth1"),
+            b: ep("ghost", "eth0"),
+        });
+        assert_eq!(
+            compile(&topo),
+            Err(CompileError::UnknownNode {
+                link: 2,
+                node: "ghost".into()
+            })
+        );
     }
 
     #[test]
     fn a_node_can_not_be_cabled_to_itself() {
         let mut topo = three_node();
-        topo.links = vec![Link { a: ep("router", "eth0"), b: ep("router", "eth1") }];
-        assert_eq!(compile(&topo), Err(CompileError::SelfLink { link: 0, node: "router".into() }));
+        topo.links = vec![Link {
+            a: ep("router", "eth0"),
+            b: ep("router", "eth1"),
+        }];
+        assert_eq!(
+            compile(&topo),
+            Err(CompileError::SelfLink {
+                link: 0,
+                node: "router".into()
+            })
+        );
     }
 
     #[test]
