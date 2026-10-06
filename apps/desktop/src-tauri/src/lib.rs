@@ -34,6 +34,8 @@ struct DesktopInfo {
     /// Whether `docker` answers (installed, running, and this user may use it).
     docker: bool,
     wireshark: bool,
+    /// Wireshark can show captures live (its `dumpcap` is usable by this account).
+    live_capture: bool,
     labs: String,
 }
 
@@ -49,7 +51,13 @@ async fn desktop_info(app: AppHandle) -> Result<DesktopInfo, String> {
     })
     .await
     .unwrap_or(false);
-    Ok(DesktopInfo { version: env!("CARGO_PKG_VERSION"), docker, wireshark: runner::has("wireshark"), labs })
+    Ok(DesktopInfo {
+        version: env!("CARGO_PKG_VERSION"),
+        docker,
+        wireshark: runner::has("wireshark"),
+        live_capture: runner::live_capture_possible(),
+        labs,
+    })
 }
 
 /// Writes the lab (its isoloom.yml and Docker files) and starts it.

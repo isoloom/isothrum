@@ -195,10 +195,24 @@ pub fn has(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Starts a capture: live into Wireshark when it is installed, otherwise into `file`.
+/// Whether Wireshark can show a capture live: it hands even a piped capture to `dumpcap`, which
+/// Linux distributions restrict to the `wireshark` group. Without it, Wireshark opens only to
+/// fail with "Couldn't run dumpcap in child process: Permission denied".
+pub fn live_capture_possible() -> bool {
+    has("wireshark")
+        && Command::new("dumpcap")
+            .arg("-v")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+}
+
+/// Starts a capture: live into Wireshark when it can show it, otherwise into `file`.
 pub fn start_capture(plan: &CapturePlan, file: &Path) -> Result<Capture, RunError> {
     let mut dump = capture_command(plan);
-    if has("wireshark") {
+    if live_capture_possible() {
         let mut dump = dump
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
