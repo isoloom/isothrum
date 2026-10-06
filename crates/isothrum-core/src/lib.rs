@@ -12,7 +12,7 @@
 
 use indexmap::IndexMap;
 use isoloom_core::model::{DockerImpl, VmImpl};
-use isoloom_core::{Machine, Network, Service, Spec};
+use isoloom_core::{Machine, Network, Reach, Service, Spec};
 use serde::{Deserialize, Serialize};
 
 /// The block the cables are cut from: `10.200.0.0/16`, one /29 per cable. Isoloom takes a /24 to
@@ -69,13 +69,23 @@ pub struct Node {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum Kind {
-    Container { image: String },
+    Container {
+        image: String,
+        /// The image runs no service of its own (a stock Linux image): keep it running idle, as a
+        /// machine to work from (Isoloom's `docker.idle`).
+        #[serde(default)]
+        idle: bool,
+    },
     Vm {
         os: String,
         /// Steps run inside the VM, in order (`.sh` scripts, or Ansible `.yml`).
         #[serde(default)]
         provision: Vec<String>,
     },
+    /// An automatic router: not a machine. The networks it is on (LANs, VLANs, cables) can all
+    /// reach each other, through Isoloom's own router (`reach` rules both ways); nothing to
+    /// configure. A router you configure yourself is a container or a VM (FRR, for instance).
+    Router {},
 }
 
 /// A cable between two ports. A port carries at most one cable.
@@ -193,16 +203,23 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
     }
 
     let mut machines: IndexMap<String, Machine> = IndexMap::new();
+    // Automatic routers aren't machines: only the networks they join count.
+    let mut routers: IndexMap<String, Vec<String>> = IndexMap::new();
     for (name, node) in &topo.nodes {
+        if matches!(node.kind, Kind::Router {}) {
+            routers.insert(name.clone(), node.networks.keys().cloned().collect());
+            continue;
+        }
         let mut m = Machine {
             access: node.access,
             services: node.services.clone(),
             ..Machine::default()
         };
         match &node.kind {
-            Kind::Container { image } => {
-                m.docker = Some(DockerImpl { image: Some(image.clone()), build: None, init: vec![] });
+            Kind::Container { image, idle } => {
+                m.docker = Some(DockerImpl { image: Some(image.clone()), build: None, init: vec![], idle: *idle });
             }
+            Kind::Router {} => unreachable!("routers are skipped above"),
             Kind::Vm { os, provision } => {
                 m.vm = Some(VmImpl { os: os.clone(), provision: provision.clone(), image: None });
             }
@@ -224,7 +241,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
 
         // Asked-for addresses first, then the others take the free ones in order.
         let mut taken: IndexMap<u8, String> = IndexMap::new();
-        for (node, n) in &topo.nodes {
+        for (node, n) in topo.nodes.iter().filter(|(node, _)| !routers.contains_key(*node)) {
             if let Some(Some(octet)) = n.networks.get(name) {
                 if let Some(other) = taken.insert(*octet, node.clone()) {
                     return Err(CompileError::AddressTaken {
@@ -237,7 +254,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
             }
         }
         let mut free = usable(prefix).filter(|o| !taken.contains_key(o));
-        for (node, n) in &topo.nodes {
+        for (node, n) in topo.nodes.iter().filter(|(node, _)| !routers.contains_key(*node)) {
             if let Some(None) = n.networks.get(name) {
                 let octet = free
                     .next()
@@ -269,19 +286,41 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
 
         let net = link_network(i);
         let (cidr, a_octet, b_octet) = link_block(i);
+        // A cable between two automatic routers carries nothing of its own.
+        if routers.contains_key(&link.a.node) && routers.contains_key(&link.b.node) {
+            continue;
+        }
         networks.insert(
             net.clone(),
             Network { cidr, internet: false, gateway: None, docker: None },
         );
-        machines[&link.a.node].networks.insert(net.clone(), a_octet);
-        machines[&link.b.node].networks.insert(net, b_octet);
+        for (end, octet) in [(&link.a.node, a_octet), (&link.b.node, b_octet)] {
+            match routers.get_mut(end) {
+                Some(nets) => nets.push(net.clone()),
+                None => {
+                    machines[end].networks.insert(net.clone(), octet);
+                }
+            }
+        }
+    }
+
+    // Each automatic router lets every pair of its networks reach each other, both ways.
+    let mut reach: Vec<Reach> = Vec::new();
+    for nets in routers.values() {
+        for from in nets {
+            for to in nets {
+                if from != to && !reach.iter().any(|r| &r.from == from && &r.to == to) {
+                    reach.push(Reach { from: from.clone(), to: to.clone(), ports: vec![] });
+                }
+            }
+        }
     }
 
     Ok(Spec {
         version: 1,
         name: topo.name.clone(),
         networks,
-        reach: vec![],
+        reach,
         inputs: vec![],
         machines,
         provision: vec![],
@@ -300,7 +339,7 @@ pub fn to_yaml(spec: &Spec) -> Result<String, CompileError> {
 
 /// Fields whose value is Isoloom's default, so leaving them out means the same thing.
 /// `internet` is not here: it defaults to true, and every cable sets it to false.
-const DEFAULT_FALSE: &[&str] = &["privileged", "read_only", "access", "http"];
+const DEFAULT_FALSE: &[&str] = &["privileged", "read_only", "access", "http", "idle"];
 
 fn strip_defaults(value: &mut serde_yaml_ng::Value) {
     use serde_yaml_ng::Value;
@@ -356,7 +395,7 @@ mod tests {
     fn three_node() -> Topology {
         let mut nodes = IndexMap::new();
         nodes.insert("client".into(), Node { access: true, ..node(Kind::Vm { os: "debian-12".into(), provision: vec!["provision/x.sh".into()] }) });
-        nodes.insert("router".into(), node(Kind::Container { image: "frrouting/frr:v8.5.2".into() }));
+        nodes.insert("router".into(), node(Kind::Container { image: "frrouting/frr:v8.5.2".into(), idle: false }));
         nodes.insert("server".into(), node(Kind::Vm { os: "debian-12".into(), provision: vec!["provision/x.sh".into()] }));
         Topology {
             name: "three-node".into(),
@@ -446,7 +485,7 @@ mod tests {
         let problems = isoloom_core::validate(&spec);
         assert!(problems.is_empty(), "{problems:?}");
 
-        topo.nodes.insert("extra".into(), node(Kind::Container { image: "alpine:3.20".into() }));
+        topo.nodes.insert("extra".into(), node(Kind::Container { image: "alpine:3.20".into(), idle: true }));
         topo.nodes["extra"].networks.insert("office".into(), None);
         assert!(matches!(compile(&topo), Err(CompileError::LanFull { .. })));
     }
@@ -480,6 +519,44 @@ mod tests {
         assert_eq!(spec.machines["client"].networks["link-0"], 2);
         let yaml = to_yaml(&spec).unwrap();
         let problems = isoloom_core::validate(&isoloom_core::parse(&yaml).unwrap());
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn an_idle_container_is_kept_running() {
+        let mut topo = three_node();
+        topo.nodes["router"].kind = Kind::Container { image: "alpine:3.20".into(), idle: true };
+        let spec = compile(&topo).unwrap();
+        assert!(spec.machines["router"].docker.as_ref().unwrap().idle);
+        assert!(to_yaml(&spec).unwrap().contains("idle: true"));
+    }
+
+    #[test]
+    fn an_automatic_router_lets_its_networks_reach_each_other() {
+        let mut topo = two_lans();
+        topo.nodes["router"].kind = Kind::Router {};
+        topo.nodes["router"].networks.insert("office".into(), None);
+        let spec = compile(&topo).unwrap();
+        // Not a machine, and no address taken on its LANs.
+        assert!(!spec.machines.contains_key("router"));
+        assert_eq!(spec.machines["client"].networks["office"], 10);
+        let pairs: Vec<(&str, &str)> = spec.reach.iter().map(|r| (r.from.as_str(), r.to.as_str())).collect();
+        assert_eq!(pairs, vec![("office", "servers"), ("servers", "office")]);
+        let problems = isoloom_core::validate(&spec);
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn an_automatic_router_routes_its_cables_too() {
+        let mut topo = two_lans();
+        topo.nodes["router"].kind = Kind::Router {};
+        topo.nodes["router"].networks.shift_remove("office");
+        topo.links.push(Link { a: ep("router", "eth1"), b: ep("client", "eth1") });
+        let spec = compile(&topo).unwrap();
+        assert_eq!(spec.networks["link-0"].cidr, "10.200.0.0/29");
+        assert_eq!(spec.machines["client"].networks["link-0"], 3);
+        assert!(spec.reach.iter().any(|r| r.from == "link-0" && r.to == "servers"));
+        let problems = isoloom_core::validate(&spec);
         assert!(problems.is_empty(), "{problems:?}");
     }
 

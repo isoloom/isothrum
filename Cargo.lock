@@ -155,7 +155,7 @@ dependencies = [
 [[package]]
 name = "isoloom-core"
 version = "0.7.2"
-source = "git+https://github.com/isoloom/isoloom?rev=b61d15ef5de03da38d7ffda2334ba8de7b31864d#b61d15ef5de03da38d7ffda2334ba8de7b31864d"
+source = "git+https://github.com/isoloom/isoloom?rev=5fef0fca7c112d95d9c5591ad83552571ebe51bb#5fef0fca7c112d95d9c5591ad83552571ebe51bb"
 dependencies = [
  "hcl-rs",
  "indexmap",

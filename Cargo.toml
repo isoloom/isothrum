@@ -12,7 +12,7 @@ publish = false
 
 [workspace.dependencies]
 # Pinned to an Isoloom commit; for local work on both, add a [patch] to ../isoloom.
-isoloom-core = { git = "https://github.com/isoloom/isoloom", rev = "b61d15ef5de03da38d7ffda2334ba8de7b31864d" }
+isoloom-core = { git = "https://github.com/isoloom/isoloom", rev = "5fef0fca7c112d95d9c5591ad83552571ebe51bb" }
 isothrum-core = { path = "crates/isothrum-core" }
 indexmap = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
