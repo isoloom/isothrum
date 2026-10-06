@@ -9,6 +9,7 @@ and every file Isoloom generates from it.
   written without Isoloom's defaults.
 - `crates/isothrum-wasm`: the same, compiled to WebAssembly for the browser editor: the spec,
   its validation, the generated files, and one zip to download.
+- `apps/desktop`: the desktop app (Tauri): run a lab with Docker and capture its traffic.
 - `docs/GNS3_COVERAGE.md`: which GNS3 features Isothrum covers, plans or leaves out.
 
 ## Build

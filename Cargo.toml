@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/isothrum-core", "crates/isothrum-wasm"]
+# The desktop app is its own workspace: it needs GTK/WebKit, which the engine does not.
+exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
