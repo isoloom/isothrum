@@ -105,6 +105,16 @@ fn addresses(spec: &Spec) -> IndexMap<String, Vec<(String, String)>> {
 
 /// The zip the user downloads: `isoloom.yml` at the root, and each generated file at its path.
 pub fn bundle_bytes(topology_json: &str) -> Result<Vec<u8>, String> {
+    bundle_filtered(topology_json, None)
+}
+
+/// One target's zip: `isoloom.yml` and only that target's folder (`docker`, `hybrid`,
+/// `cloud-docker/aws`...), so `isoloom run` and the target's own tool both work from it.
+pub fn bundle_target_bytes(topology_json: &str, target_dir: &str) -> Result<Vec<u8>, String> {
+    bundle_filtered(topology_json, Some(target_dir))
+}
+
+fn bundle_filtered(topology_json: &str, target_dir: Option<&str>) -> Result<Vec<u8>, String> {
     let plan = plan(topology_json);
     let yaml = plan.isoloom_yml.ok_or_else(|| plan.error.unwrap_or_default())?;
     if !plan.problems.is_empty() {
@@ -117,12 +127,23 @@ pub fn bundle_bytes(topology_json: &str) -> Result<Vec<u8>, String> {
         zip.start_file(path, options).map_err(|e| e.to_string())?;
         zip.write_all(contents.as_bytes()).map_err(|e| e.to_string())
     };
+    let prefix = target_dir.map(|d| format!(".isoloom/{}/", d.trim_matches('/')));
+    let files: Vec<&File> = plan.files.iter().filter(|f| prefix.as_ref().is_none_or(|p| f.path.starts_with(p))).collect();
+    if files.is_empty() {
+        return Err(format!("this lab has no files for `{}`", target_dir.unwrap_or("any target")));
+    }
     add(SPEC_PATH, &yaml)?;
-    for f in &plan.files {
+    for f in files {
         add(&f.path, &f.contents)?;
     }
     let cursor = zip.finish().map_err(|e| e.to_string())?;
     Ok(cursor.into_inner())
+}
+
+/// The download for one target (see [`bundle_target_bytes`]).
+#[wasm_bindgen]
+pub fn bundle_target(topology_json: &str, target_dir: &str) -> Result<Vec<u8>, JsError> {
+    bundle_target_bytes(topology_json, target_dir).map_err(|e| JsError::new(&e))
 }
 
 /// JSON for the editor: a [`Plan`].
@@ -191,6 +212,21 @@ mod tests {
         assert!(plan.problems.iter().any(|p| p.contains("lonely")), "{:?}", plan.problems);
         assert!(plan.files.is_empty());
         assert!(bundle_bytes(t).is_err());
+    }
+
+    #[test]
+    fn a_target_bundle_holds_only_that_target() {
+        // A target this lab does produce: the folder of its first generated file.
+        let first = plan(TOPOLOGY).files[0].path.clone();
+        let target = first.trim_start_matches(".isoloom/").split('/').next().unwrap().to_string();
+        let bytes = bundle_target_bytes(TOPOLOGY, &target).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_string()).collect();
+        assert!(names.contains(&SPEC_PATH.to_string()));
+        let prefix = format!(".isoloom/{target}/");
+        assert!(names.iter().all(|n| n == SPEC_PATH || n.starts_with(&prefix)), "{names:?}");
+        assert!(names.len() > 1);
+        assert!(bundle_target_bytes(TOPOLOGY, "no-such-target").is_err());
     }
 
     #[test]
