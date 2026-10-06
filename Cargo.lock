@@ -179,6 +179,7 @@ dependencies = [
 name = "isothrum-wasm"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "isoloom-core",
  "isothrum-core",
  "serde",

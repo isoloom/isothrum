@@ -4,7 +4,8 @@
 
 use std::io::{Cursor, Write};
 
-use isoloom_core::GeneratedFile;
+use indexmap::IndexMap;
+use isoloom_core::{GeneratedFile, Spec};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use zip::write::SimpleFileOptions;
@@ -25,6 +26,8 @@ pub struct Plan {
     pub files: Vec<File>,
     /// Targets the spec allows but no generator covers yet, with the reason.
     pub skipped: Vec<String>,
+    /// Each machine's addresses, for the canvas: machine -> [(network, IPv4)].
+    pub addresses: IndexMap<String, Vec<(String, String)>>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -35,7 +38,15 @@ pub struct File {
 
 impl Plan {
     fn failed(error: String) -> Plan {
-        Plan { ok: false, error: Some(error), isoloom_yml: None, problems: vec![], files: vec![], skipped: vec![] }
+        Plan {
+            ok: false,
+            error: Some(error),
+            isoloom_yml: None,
+            problems: vec![],
+            files: vec![],
+            skipped: vec![],
+            addresses: IndexMap::new(),
+        }
     }
 }
 
@@ -60,7 +71,9 @@ pub fn plan(topology_json: &str) -> Plan {
     let (generated, skipped) =
         if problems.is_empty() { isoloom_core::generate_all(&spec) } else { (vec![], vec![]) };
 
+    let addresses = addresses(&spec);
     Plan {
+        addresses,
         ok: true,
         error: None,
         isoloom_yml: Some(yaml),
@@ -68,6 +81,26 @@ pub fn plan(topology_json: &str) -> Plan {
         files: generated.into_iter().map(|GeneratedFile { path, contents }| File { path, contents }).collect(),
         skipped: skipped.iter().map(|e| format!("{e:?}")).collect(),
     }
+}
+
+/// Every machine's IPv4 addresses: the network's first three octets and the machine's last one
+/// (Isoloom's networks are /24 to /29, so the last octet is all that varies).
+fn addresses(spec: &Spec) -> IndexMap<String, Vec<(String, String)>> {
+    spec.machines
+        .iter()
+        .map(|(name, m)| {
+            let ips = m
+                .networks
+                .iter()
+                .filter_map(|(net, octet)| {
+                    let cidr = &spec.networks.get(net)?.cidr;
+                    let base = cidr.split('/').next()?.rsplit_once('.')?.0;
+                    Some((net.clone(), format!("{base}.{octet}")))
+                })
+                .collect();
+            (name.clone(), ips)
+        })
+        .collect()
 }
 
 /// The zip the user downloads: `isoloom.yml` at the root, and each generated file at its path.
@@ -124,6 +157,18 @@ mod tests {
         let yml = plan.isoloom_yml.unwrap();
         assert!(yml.contains("name: pair"));
         assert!(plan.files.iter().any(|f| f.path.ends_with("docker/compose.yml")), "{:?}", plan.files.iter().map(|f| &f.path).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn machines_get_addresses_on_their_lans() {
+        let t = r#"{"name":"lan","networks":{"office":{"cidr":"10.10.1.0/24"}},"nodes":{
+            "a":{"kind":{"container":{"image":"alpine:3.20"}},"networks":{"office":null}},
+            "b":{"kind":{"container":{"image":"alpine:3.20"}},"networks":{"office":20}}}}"#;
+        let plan = plan(t);
+        assert!(plan.ok, "{:?}", plan.error);
+        assert_eq!(plan.addresses["a"], vec![("office".to_string(), "10.10.1.10".to_string())]);
+        assert_eq!(plan.addresses["b"], vec![("office".to_string(), "10.10.1.20".to_string())]);
+        assert!(plan.problems.is_empty(), "{:?}", plan.problems);
     }
 
     #[test]

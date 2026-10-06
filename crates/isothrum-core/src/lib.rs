@@ -1,9 +1,14 @@
-//! A lab as drawn in the editor: nodes (containers or VMs) and the cables between their ports.
+//! A lab as drawn in the editor: nodes (containers or VMs), the LANs drawn around them, and the
+//! cables between their ports.
 //!
-//! [`compile`] turns a [`Topology`] into an Isoloom spec. Every cable becomes its own
-//! point-to-point network (a /30 with the two ends on .1 and .2), so the environment runs on any
-//! target Isoloom can produce. Routing is not decided here: Isoloom routes between its networks
-//! through its own router, and `reach` rules are the topology's to add.
+//! [`compile`] turns a [`Topology`] into an Isoloom spec:
+//! - a LAN (an area drawn on the canvas, a VLAN in practice) is an Isoloom network with its own
+//!   CIDR; each machine on it gets an address there, the next free one unless it asks for one;
+//! - a cable between two machines is its own point-to-point network (a /29 cut from
+//!   `10.200.0.0/16`, the two ends on its first two usable addresses).
+//!
+//! Routing is not decided here: Isoloom routes between its networks through its own router, and
+//! `reach` rules are the topology's to add.
 
 use indexmap::IndexMap;
 use isoloom_core::model::{DockerImpl, VmImpl};
@@ -23,8 +28,26 @@ pub struct Topology {
     /// Kebab-case id of the lab, becomes the spec's `name`.
     pub name: String,
     pub nodes: IndexMap<String, Node>,
+    /// The LANs: name -> its block. Machines join one through [`Node::networks`].
+    #[serde(default)]
+    pub networks: IndexMap<String, Lan>,
     #[serde(default)]
     pub links: Vec<Link>,
+}
+
+/// A LAN (or VLAN): one shared segment for every machine on it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lan {
+    /// An IPv4 block inside 10.0.0.0/8, /24 to /29 (Isoloom's rule), e.g. `10.10.1.0/24`.
+    pub cidr: String,
+    /// Whether machines on it may reach the internet (Isoloom's default: yes).
+    #[serde(default = "yes")]
+    pub internet: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,6 +59,10 @@ pub struct Node {
     pub access: bool,
     #[serde(default)]
     pub services: Vec<Service>,
+    /// The LANs this node is on: LAN name -> the last octet of its address there, or `None` for
+    /// the next free one.
+    #[serde(default)]
+    pub networks: IndexMap<String, Option<u8>>,
 }
 
 /// How a node is produced. Both kinds are first-class: a Docker container or a VM.
@@ -73,6 +100,16 @@ pub enum CompileError {
     SelfLink { link: usize, node: String },
     PortInUse { node: String, port: String },
     TooManyLinks(usize),
+    /// A node is on a LAN the lab doesn't have.
+    UnknownLan { node: String, lan: String },
+    /// A LAN's name is one the cables use (`link-<n>`).
+    ReservedLanName(String),
+    /// A LAN's CIDR isn't `a.b.c.d/n`.
+    BadCidr { lan: String, cidr: String },
+    /// Two nodes ask for the same address on a LAN.
+    AddressTaken { lan: String, octet: u8, nodes: (String, String) },
+    /// A LAN has more machines than free addresses.
+    LanFull { lan: String, cidr: String },
     Spec(String),
 }
 
@@ -90,6 +127,21 @@ impl std::fmt::Display for CompileError {
             }
             CompileError::TooManyLinks(n) => {
                 write!(f, "{n} cables don't fit in {}.{}.0.0/16", LINK_BASE[0], LINK_BASE[1])
+            }
+            CompileError::UnknownLan { node, lan } => {
+                write!(f, "`{node}` is on LAN `{lan}`, which the lab doesn't have")
+            }
+            CompileError::ReservedLanName(lan) => {
+                write!(f, "`{lan}` is a name the cables use; call the LAN something else")
+            }
+            CompileError::BadCidr { lan, cidr } => {
+                write!(f, "LAN `{lan}`: `{cidr}` isn't a block like 10.10.1.0/24")
+            }
+            CompileError::AddressTaken { lan, octet, nodes: (a, b) } => {
+                write!(f, "on LAN `{lan}`, `{a}` and `{b}` both ask for .{octet}")
+            }
+            CompileError::LanFull { lan, cidr } => {
+                write!(f, "LAN `{lan}` ({cidr}) has no free address left; use a larger block")
             }
             CompileError::Spec(e) => write!(f, "{e}"),
         }
@@ -112,6 +164,25 @@ fn link_block(i: usize) -> (String, u8, u8) {
         fourth + 2,
         fourth + 3,
     )
+}
+
+/// The addresses a machine may take on a block of `prefix` bits, lowest first: Isoloom keeps the
+/// network address and .1 (the gateway), the two last ones (its controller and router) and the
+/// broadcast. A /24 or larger starts at .10, leaving room for the infrastructure people expect
+/// low in a LAN.
+fn usable(prefix: u8) -> std::ops::RangeInclusive<u8> {
+    let size: u32 = 1 << (32 - u32::from(prefix.clamp(24, 30)));
+    let first = if size >= 256 { 10 } else { 2 };
+    let last = (size - 4) as u8;
+    first..=last
+}
+
+/// The prefix length of `a.b.c.d/n`.
+fn prefix_of(cidr: &str) -> Option<u8> {
+    let (addr, len) = cidr.split_once('/')?;
+    let ok = addr.split('.').filter_map(|o| o.parse::<u8>().ok()).count() == 4;
+    let len = len.parse::<u8>().ok()?;
+    (ok && len <= 32).then_some(len)
 }
 
 /// Compiles a topology into an Isoloom spec. The result is not validated yet: run
@@ -140,6 +211,47 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
     }
 
     let mut networks: IndexMap<String, Network> = IndexMap::new();
+    for (name, lan) in &topo.networks {
+        if name.starts_with("link-") {
+            return Err(CompileError::ReservedLanName(name.clone()));
+        }
+        let prefix = prefix_of(&lan.cidr)
+            .ok_or_else(|| CompileError::BadCidr { lan: name.clone(), cidr: lan.cidr.clone() })?;
+        networks.insert(
+            name.clone(),
+            Network { cidr: lan.cidr.clone(), internet: lan.internet, gateway: None, docker: None },
+        );
+
+        // Asked-for addresses first, then the others take the free ones in order.
+        let mut taken: IndexMap<u8, String> = IndexMap::new();
+        for (node, n) in &topo.nodes {
+            if let Some(Some(octet)) = n.networks.get(name) {
+                if let Some(other) = taken.insert(*octet, node.clone()) {
+                    return Err(CompileError::AddressTaken {
+                        lan: name.clone(),
+                        octet: *octet,
+                        nodes: (other, node.clone()),
+                    });
+                }
+                machines[node].networks.insert(name.clone(), *octet);
+            }
+        }
+        let mut free = usable(prefix).filter(|o| !taken.contains_key(o));
+        for (node, n) in &topo.nodes {
+            if let Some(None) = n.networks.get(name) {
+                let octet = free
+                    .next()
+                    .ok_or_else(|| CompileError::LanFull { lan: name.clone(), cidr: lan.cidr.clone() })?;
+                machines[node].networks.insert(name.clone(), octet);
+            }
+        }
+    }
+    for (node, n) in &topo.nodes {
+        if let Some(lan) = n.networks.keys().find(|l| !topo.networks.contains_key(*l)) {
+            return Err(CompileError::UnknownLan { node: node.clone(), lan: lan.clone() });
+        }
+    }
+
     let mut used_ports: Vec<(&str, &str)> = Vec::new();
     for (i, link) in topo.links.iter().enumerate() {
         for end in [&link.a, &link.b] {
@@ -216,7 +328,24 @@ mod tests {
     use super::*;
 
     fn node(kind: Kind) -> Node {
-        Node { kind, access: false, services: vec![] }
+        Node { kind, access: false, services: vec![], networks: IndexMap::new() }
+    }
+
+    fn lan(cidr: &str) -> Lan {
+        Lan { cidr: cidr.into(), internet: true }
+    }
+
+    /// Two LANs, office and servers, with the router on both (at .254 on office).
+    fn two_lans() -> Topology {
+        let mut topo = three_node();
+        topo.links.clear();
+        topo.networks.insert("office".into(), lan("10.10.1.0/24"));
+        topo.networks.insert("servers".into(), lan("10.10.2.0/24"));
+        topo.nodes["client"].networks.insert("office".into(), None);
+        topo.nodes["server"].networks.insert("servers".into(), None);
+        topo.nodes["router"].networks.insert("office".into(), Some(254));
+        topo.nodes["router"].networks.insert("servers".into(), None);
+        topo
     }
 
     fn ep(node: &str, port: &str) -> Endpoint {
@@ -232,6 +361,7 @@ mod tests {
         Topology {
             name: "three-node".into(),
             nodes,
+            networks: IndexMap::new(),
             links: vec![
                 Link { a: ep("client", "eth0"), b: ep("router", "eth0") },
                 Link { a: ep("router", "eth1"), b: ep("server", "eth0") },
@@ -284,6 +414,73 @@ mod tests {
         }
         assert!(yaml.contains("internet: false"));
         assert!(yaml.contains("access: true"));
+    }
+
+    #[test]
+    fn machines_on_a_lan_take_its_free_addresses() {
+        let mut topo = two_lans();
+        topo.nodes["router"].networks.insert("office".into(), Some(10));
+        let spec = compile(&topo).unwrap();
+        assert_eq!(spec.networks["office"].cidr, "10.10.1.0/24");
+        // The router asked for .10 on office, so the client takes the next one.
+        assert_eq!(spec.machines["router"].networks["office"], 10);
+        assert_eq!(spec.machines["client"].networks["office"], 11);
+        assert_eq!(spec.machines["router"].networks["servers"], 10);
+        assert_eq!(spec.machines["server"].networks["servers"], 11);
+        let problems = isoloom_core::validate(&spec);
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn a_small_lan_starts_low_and_fills_up() {
+        let mut topo = two_lans();
+        topo.nodes["router"].networks.shift_remove("office");
+        topo.networks["office"].cidr = "10.10.1.0/29".into();
+        topo.nodes["server"].networks.insert("office".into(), None);
+        topo.nodes["router"].networks.insert("office".into(), None);
+        let spec = compile(&topo).unwrap();
+        // A /29 has .2 to .4 for machines.
+        assert_eq!(spec.machines["client"].networks["office"], 2);
+        assert_eq!(spec.machines["router"].networks["office"], 3);
+        assert_eq!(spec.machines["server"].networks["office"], 4);
+        let problems = isoloom_core::validate(&spec);
+        assert!(problems.is_empty(), "{problems:?}");
+
+        topo.nodes.insert("extra".into(), node(Kind::Container { image: "alpine:3.20".into() }));
+        topo.nodes["extra"].networks.insert("office".into(), None);
+        assert!(matches!(compile(&topo), Err(CompileError::LanFull { .. })));
+    }
+
+    #[test]
+    fn lan_mistakes_say_what_to_fix() {
+        let mut topo = two_lans();
+        topo.nodes["client"].networks.insert("dmz".into(), None);
+        assert_eq!(compile(&topo), Err(CompileError::UnknownLan { node: "client".into(), lan: "dmz".into() }));
+
+        let mut topo = two_lans();
+        topo.nodes["client"].networks.insert("office".into(), Some(254));
+        assert!(matches!(compile(&topo), Err(CompileError::AddressTaken { octet: 254, .. })));
+
+        let mut topo = two_lans();
+        topo.networks.insert("link-0".into(), lan("10.10.9.0/24"));
+        assert_eq!(compile(&topo), Err(CompileError::ReservedLanName("link-0".into())));
+
+        let mut topo = two_lans();
+        topo.networks["office"].cidr = "office".into();
+        assert!(matches!(compile(&topo), Err(CompileError::BadCidr { .. })));
+    }
+
+    #[test]
+    fn lans_and_cables_mix() {
+        let mut topo = two_lans();
+        topo.nodes["router"].networks.insert("office".into(), None);
+        topo.links.push(Link { a: ep("client", "eth1"), b: ep("server", "eth1") });
+        let spec = compile(&topo).unwrap();
+        assert_eq!(spec.networks.len(), 3);
+        assert_eq!(spec.machines["client"].networks["link-0"], 2);
+        let yaml = to_yaml(&spec).unwrap();
+        let problems = isoloom_core::validate(&isoloom_core::parse(&yaml).unwrap());
+        assert!(problems.is_empty(), "{problems:?}");
     }
 
     #[test]
