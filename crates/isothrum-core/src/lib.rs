@@ -14,7 +14,7 @@ pub mod starters;
 
 use indexmap::IndexMap;
 use isoloom_core::model::{DockerImpl, VmImpl};
-use isoloom_core::{Machine, Network, Reach, Service, Spec};
+use isoloom_core::{Machine, Network, Reach, Service, Spec, Tc, Vlan};
 use serde::{Deserialize, Serialize};
 
 /// The block the cables are cut from: `10.200.0.0/16`, one /29 per cable. Isoloom takes a /24 to
@@ -46,6 +46,15 @@ pub struct Lan {
     /// Whether machines on it may reach the internet (Isoloom's default: yes).
     #[serde(default = "yes")]
     pub internet: bool,
+    /// A VLAN of a switch: the switch (or the first of the switches a trunk joins) it belongs to,
+    /// and its id. In the spec it nests under that switch's LAN (`sw1.vlan10`).
+    #[serde(default)]
+    pub switch: Option<String>,
+    #[serde(default)]
+    pub vlan: Option<u16>,
+    /// How the LAN behaves (a slow or lossy link): Isoloom's `tc`.
+    #[serde(default)]
+    pub tc: Option<Tc>,
 }
 
 fn yes() -> bool {
@@ -96,6 +105,9 @@ pub enum Kind {
 pub struct Link {
     pub a: Endpoint,
     pub b: Endpoint,
+    /// How the cable behaves (latency, jitter, loss, bandwidth): Isoloom's `tc` on its network.
+    #[serde(default)]
+    pub tc: Option<Tc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -293,6 +305,8 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
                 internet: lan.internet,
                 gateway: None,
                 docker: None,
+                vlans: IndexMap::new(),
+                tc: lan.tc.clone(),
             },
         );
 
@@ -375,6 +389,8 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
                 internet: false,
                 gateway: None,
                 docker: None,
+                vlans: IndexMap::new(),
+                tc: link.tc.clone(),
             },
         );
         for (end, octet) in [(&link.a.node, a_octet), (&link.b.node, b_octet)] {
@@ -403,6 +419,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         }
     }
 
+    let (networks, machines, reach) = nest_vlans(topo, networks, machines, reach);
     Ok(Spec {
         version: 1,
         name: topo.name.clone(),
@@ -410,10 +427,122 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         reach,
         inputs: vec![],
         machines,
+        common: None,
+        groups: IndexMap::new(),
         provision: vec![],
         checks: vec![],
         targets: None,
+        message: None,
+        tools: IndexMap::new(),
+        clones: IndexMap::new(),
     })
+}
+
+/// The name a VLAN LAN has in the spec: `<switch>.vlan<id>` (`None` for a plain LAN).
+pub fn vlan_ref(lan: &Lan) -> Option<String> {
+    Some(format!("{}.vlan{}", lan.switch.as_ref()?, lan.vlan?))
+}
+
+/// The switches' VLANs, nested under each switch's LAN (Isoloom's `vlans`): the LAN's block is
+/// the smallest one holding them all, its `internet` the VLANs' when they agree. Machines and
+/// `reach` rules name them `<switch>.vlan<id>`.
+type Parts = (
+    IndexMap<String, Network>,
+    IndexMap<String, Machine>,
+    Vec<Reach>,
+);
+fn nest_vlans(
+    topo: &Topology,
+    flat: IndexMap<String, Network>,
+    mut machines: IndexMap<String, Machine>,
+    reach: Vec<Reach>,
+) -> Parts {
+    let renamed: IndexMap<&String, String> = topo
+        .networks
+        .iter()
+        .filter_map(|(name, lan)| Some((name, vlan_ref(lan)?)))
+        .collect();
+    if renamed.is_empty() {
+        return (flat, machines, reach);
+    }
+    let mut networks: IndexMap<String, Network> = IndexMap::new();
+    for (name, net) in flat {
+        let Some(lan) = topo
+            .networks
+            .get(&name)
+            .filter(|l| l.switch.is_some() && l.vlan.is_some())
+        else {
+            networks.insert(name, net);
+            continue;
+        };
+        let (switch, id) = (lan.switch.clone().unwrap(), lan.vlan.unwrap());
+        let parent = networks.entry(switch).or_insert_with(|| Network {
+            cidr: String::new(),
+            internet: net.internet,
+            gateway: None,
+            docker: None,
+            vlans: IndexMap::new(),
+            tc: None,
+        });
+        parent.vlans.insert(
+            id,
+            Vlan {
+                cidr: net.cidr,
+                internet: Some(net.internet),
+            },
+        );
+    }
+    for parent in networks.values_mut().filter(|n| !n.vlans.is_empty()) {
+        parent.cidr = covering(parent.vlans.values().map(|v| v.cidr.as_str()));
+        // When every VLAN agrees, the LAN says it once; otherwise each VLAN says its own.
+        let all: Vec<bool> = parent.vlans.values().filter_map(|v| v.internet).collect();
+        if all.iter().all(|i| *i == all[0]) {
+            parent.internet = all[0];
+            for v in parent.vlans.values_mut() {
+                v.internet = None;
+            }
+        } else {
+            parent.internet = true;
+        }
+    }
+    let rename = |n: &String| renamed.get(n).cloned().unwrap_or_else(|| n.clone());
+    for m in machines.values_mut() {
+        m.networks = m.networks.iter().map(|(n, o)| (rename(n), *o)).collect();
+    }
+    let reach = reach
+        .into_iter()
+        .map(|r| Reach {
+            from: rename(&r.from),
+            to: rename(&r.to),
+            ports: r.ports,
+        })
+        .collect();
+    (networks, machines, reach)
+}
+
+/// The smallest IPv4 block holding every one of `cidrs` (at most a /8).
+fn covering<'a>(cidrs: impl Iterator<Item = &'a str>) -> String {
+    let parse = |c: &str| -> Option<(u32, u8)> {
+        let (a, l) = c.split_once('/')?;
+        Some((
+            u32::from(a.parse::<std::net::Ipv4Addr>().ok()?),
+            l.parse().ok()?,
+        ))
+    };
+    let blocks: Vec<(u32, u8)> = cidrs.filter_map(parse).collect();
+    let Some(&(first, _)) = blocks.first() else {
+        return String::new();
+    };
+    let mut len = blocks.iter().map(|(_, l)| *l).min().unwrap_or(24);
+    let mask = |l: u8| if l == 0 { 0 } else { u32::MAX << (32 - l) };
+    while len > 8
+        && !blocks
+            .iter()
+            .all(|(b, _)| b & mask(len) == first & mask(len))
+    {
+        len -= 1;
+    }
+    format!("{}/{len}", std::net::Ipv4Addr::from(first & mask(len)))
 }
 
 /// The spec as YAML, ready to write to `isoloom.yml`: only what differs from Isoloom's defaults,
@@ -466,6 +595,9 @@ mod tests {
         Lan {
             cidr: cidr.into(),
             internet: true,
+            switch: None,
+            vlan: None,
+            tc: None,
         }
     }
 
@@ -526,10 +658,12 @@ mod tests {
                 Link {
                     a: ep("client", "eth0"),
                     b: ep("router", "eth0"),
+                    tc: None,
                 },
                 Link {
                     a: ep("router", "eth1"),
                     b: ep("server", "eth0"),
+                    tc: None,
                 },
             ],
         }
@@ -681,6 +815,7 @@ mod tests {
         topo.links.push(Link {
             a: ep("client", "eth1"),
             b: ep("server", "eth1"),
+            tc: None,
         });
         let spec = compile(&topo).unwrap();
         assert_eq!(spec.networks.len(), 3);
@@ -729,6 +864,7 @@ mod tests {
         topo.links.push(Link {
             a: ep("router", "eth1"),
             b: ep("client", "eth1"),
+            tc: None,
         });
         let spec = compile(&topo).unwrap();
         assert_eq!(spec.networks["link-0"].cidr, "10.200.0.0/29");
@@ -748,6 +884,7 @@ mod tests {
         topo.links.push(Link {
             a: ep("client", "eth0"),
             b: ep("server", "eth1"),
+            tc: None,
         });
         assert_eq!(
             compile(&topo),
@@ -764,6 +901,7 @@ mod tests {
         topo.links.push(Link {
             a: ep("client", "eth1"),
             b: ep("ghost", "eth0"),
+            tc: None,
         });
         assert_eq!(
             compile(&topo),
@@ -780,6 +918,7 @@ mod tests {
         topo.links = vec![Link {
             a: ep("router", "eth0"),
             b: ep("router", "eth1"),
+            tc: None,
         }];
         assert_eq!(
             compile(&topo),
@@ -799,6 +938,7 @@ mod tests {
             topo.links.push(Link {
                 a: ep("client", &format!("p{i}")),
                 b: ep("server", &format!("p{i}")),
+                tc: None,
             });
         }
         let spec = compile(&topo).unwrap();

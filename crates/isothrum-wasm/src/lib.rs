@@ -64,6 +64,11 @@ pub fn plan(topology_json: &str) -> Plan {
         Ok(y) => y,
         Err(e) => return Plan::failed(e.to_string()),
     };
+    // isoloom.yml keeps the VLANs under their switch; the rest of Isoloom reads them as networks.
+    let spec = match isoloom_core::vlans::flatten(spec) {
+        Ok(s) => s,
+        Err(e) => return Plan::failed(e),
+    };
 
     let problems: Vec<String> = isoloom_core::validate(&spec)
         .iter()
@@ -77,7 +82,7 @@ pub fn plan(topology_json: &str) -> Plan {
         (vec![], vec![])
     };
 
-    let addresses = addresses(&spec);
+    let addresses = addresses(&spec, &topo);
     Plan {
         addresses,
         ok: true,
@@ -93,8 +98,22 @@ pub fn plan(topology_json: &str) -> Plan {
 }
 
 /// Every machine's IPv4 addresses: the network's first three octets and the machine's last one
-/// (Isoloom's networks are /24 to /29, so the last octet is all that varies).
-fn addresses(spec: &Spec) -> IndexMap<String, Vec<(String, String)>> {
+/// (Isoloom's networks are /24 to /29, so the last octet is all that varies). Networks go by the
+/// editor's names: a VLAN that became `sw1-vlan10` is the editor's `vlan10` again.
+fn addresses(
+    spec: &Spec,
+    topo: &isothrum_core::Topology,
+) -> IndexMap<String, Vec<(String, String)>> {
+    let editor_name: IndexMap<String, &String> = topo
+        .networks
+        .iter()
+        .filter_map(|(name, lan)| {
+            Some((
+                isoloom_core::vlans::vlan_network(lan.switch.as_ref()?, lan.vlan?),
+                name,
+            ))
+        })
+        .collect();
     spec.machines
         .iter()
         .map(|(name, m)| {
@@ -104,7 +123,11 @@ fn addresses(spec: &Spec) -> IndexMap<String, Vec<(String, String)>> {
                 .filter_map(|(net, octet)| {
                     let cidr = &spec.networks.get(net)?.cidr;
                     let base = cidr.split('/').next()?.rsplit_once('.')?.0;
-                    Some((net.clone(), format!("{base}.{octet}")))
+                    let shown = editor_name
+                        .get(net)
+                        .map(|n| (*n).clone())
+                        .unwrap_or_else(|| net.clone());
+                    Some((shown, format!("{base}.{octet}")))
                 })
                 .collect();
             (name.clone(), ips)
@@ -315,6 +338,66 @@ mod tests {
         assert!(
             !names(bundle_target_bytes(TOPOLOGY, "docker").unwrap())
                 .contains(&"provision/client.sh".to_string())
+        );
+    }
+
+    #[test]
+    fn vlans_nest_under_their_switch_and_keep_the_editor_names() {
+        let t = r#"{"name":"vlans","networks":{
+            "vlan10":{"cidr":"10.10.10.0/24","switch":"sw1","vlan":10,"internet":false},
+            "vlan20":{"cidr":"10.10.20.0/24","switch":"sw1","vlan":20,"internet":false}},
+            "nodes":{
+            "pc1":{"kind":{"container":{"image":"alpine:3.20","idle":true}},"networks":{"vlan10":null}},
+            "srv":{"kind":{"container":{"image":"nginx:1.27-alpine"}},"networks":{"vlan20":null}},
+            "r":{"kind":{"router":{}},"networks":{"vlan10":null,"vlan20":null}}}}"#;
+        let plan = plan(t);
+        assert!(plan.ok, "{:?}", plan.error);
+        assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+        let yml = plan.isoloom_yml.unwrap();
+        assert!(
+            yml.contains("  sw1:\n    cidr: 10.10.0.0/19\n    internet: false\n    vlans:\n"),
+            "{yml}"
+        );
+        assert!(
+            yml.contains("sw1.vlan10: 10") && yml.contains("from: sw1.vlan10"),
+            "{yml}"
+        );
+        assert_eq!(
+            plan.addresses["pc1"],
+            vec![("vlan10".to_string(), "10.10.10.10".to_string())]
+        );
+        assert!(
+            plan.files.iter().any(
+                |f| f.path.ends_with("docker/compose.yml") && f.contents.contains("sw1-vlan10")
+            )
+        );
+        // The download parses it back the same way.
+        assert!(bundle_bytes(t).is_ok());
+    }
+
+    #[test]
+    fn a_cable_with_conditions_carries_them() {
+        let t = r#"{"name":"wan","nodes":{
+            "a":{"kind":{"container":{"image":"alpine:3.20","idle":true}}},
+            "b":{"kind":{"container":{"image":"alpine:3.20","idle":true}}}},
+            "links":[{"a":{"node":"a","port":"eth0"},"b":{"node":"b","port":"eth0"},"tc":{"delay":"40ms","loss":0.5}}]}"#;
+        let plan = plan(t);
+        assert!(
+            plan.ok && plan.problems.is_empty(),
+            "{:?} {:?}",
+            plan.error,
+            plan.problems
+        );
+        let yml = plan.isoloom_yml.unwrap();
+        assert!(
+            yml.contains("tc:\n      delay: 40ms\n      loss: 0.5"),
+            "{yml}"
+        );
+        assert!(
+            plan.files
+                .iter()
+                .any(|f| f.path.ends_with("docker/compose.yml")
+                    && f.contents.contains("netem delay 40ms loss 0.5%"))
         );
     }
 }

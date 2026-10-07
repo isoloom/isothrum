@@ -1502,8 +1502,8 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "isoloom-core"
-version = "0.7.2"
-source = "git+https://github.com/isoloom/isoloom?rev=5fef0fca7c112d95d9c5591ad83552571ebe51bb#5fef0fca7c112d95d9c5591ad83552571ebe51bb"
+version = "0.8.1"
+source = "git+https://github.com/isoloom/isoloom?rev=39b1d9cbb109a2545c3d64086b2dd548558397ba#39b1d9cbb109a2545c3d64086b2dd548558397ba"
 dependencies = [
  "hcl-rs",
  "indexmap 2.14.2",
@@ -2679,6 +2679,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap 2.14.2",
  "itoa",
  "memchr",
  "serde",

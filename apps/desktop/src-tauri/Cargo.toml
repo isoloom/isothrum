@@ -19,4 +19,4 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-isoloom-core = { git = "https://github.com/isoloom/isoloom", rev = "5fef0fca7c112d95d9c5591ad83552571ebe51bb" }
+isoloom-core = { git = "https://github.com/isoloom/isoloom", rev = "39b1d9cbb109a2545c3d64086b2dd548558397ba" }
