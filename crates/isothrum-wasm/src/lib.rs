@@ -204,6 +204,36 @@ pub fn bundle_target(topology_json: &str, target_dir: &str) -> Result<Vec<u8>, J
     bundle_target_bytes(topology_json, target_dir).map_err(|e| JsError::new(&e))
 }
 
+/// The lab's own files, next to isoloom.yml where its paths point: the appliances'
+/// configurations and the starter scripts of the VMs' provisioning steps. What the desktop app
+/// writes with the spec to run it.
+pub fn own_files(topology_json: &str) -> Vec<File> {
+    let Some(yaml) = plan(topology_json).isoloom_yml else {
+        return vec![];
+    };
+    let mut out = vec![];
+    if let Ok(topo) = serde_json::from_str::<isothrum_core::Topology>(topology_json) {
+        for (path, contents) in isothrum_core::config_files(&topo) {
+            out.push(File { path, contents });
+        }
+    }
+    if let Ok(spec) = isoloom_core::parse(&yaml) {
+        for s in isothrum_core::starters::starters(&spec) {
+            out.push(File {
+                path: s.path,
+                contents: s.contents,
+            });
+        }
+    }
+    out
+}
+
+/// JSON for the desktop app: [`own_files`].
+#[wasm_bindgen]
+pub fn own_files_json(topology_json: &str) -> String {
+    serde_json::to_string(&own_files(topology_json)).expect("files serialize")
+}
+
 /// JSON for the editor: a [`Plan`].
 #[wasm_bindgen]
 pub fn plan_json(topology_json: &str) -> String {
@@ -219,6 +249,16 @@ pub fn bundle(topology_json: &str) -> Result<Vec<u8>, JsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_labs_own_files_are_its_starters() {
+        let files = own_files(TOPOLOGY);
+        assert_eq!(
+            files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            ["provision/client.sh"]
+        );
+        assert!(files[0].contents.starts_with("#!"));
+    }
 
     const TOPOLOGY: &str = r#"{
         "name": "pair",

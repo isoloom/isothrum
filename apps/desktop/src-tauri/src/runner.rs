@@ -5,6 +5,9 @@
 //! a throwaway container joins the network namespace of one machine on the LAN or cable, finds
 //! the interface on that network, and streams `tcpdump` to Wireshark (or to a `.pcap` file):
 //! GNS3's "capture on a link", for a lab of containers.
+//!
+//! A lab with VMs runs through Isoloom's Vagrant output, or its hybrid one when it mixes VMs and
+//! containers: `vms.rs`. The lab's folder records which (`runtime`).
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -41,35 +44,111 @@ impl std::fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
+/// How a lab runs: Docker Compose, or Vagrant (only VMs, or VMs and a Docker host VM for the
+/// containers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Runtime {
+    Docker,
+    Vagrant,
+    Hybrid,
+}
+
+/// Where the lab's folder records its runtime.
+const RUNTIME: &str = "runtime";
+
+/// The runtime the lab was prepared for (Docker when nothing says otherwise).
+pub fn runtime(dir: &Path) -> Runtime {
+    match std::fs::read_to_string(dir.join(RUNTIME))
+        .unwrap_or_default()
+        .trim()
+    {
+        "vagrant" => Runtime::Vagrant,
+        "hybrid" => Runtime::Hybrid,
+        _ => Runtime::Docker,
+    }
+}
+
+/// Whether the lab has been prepared (its generated files are there).
+pub fn prepared(dir: &Path) -> bool {
+    match runtime(dir) {
+        Runtime::Docker => dir.join(".isoloom/docker/compose.yml").is_file(),
+        rt => crate::vms::dir(dir, rt).join("Vagrantfile").is_file(),
+    }
+}
+
+/// The runtime that fits the lab and Isoloom's files for it: Docker when every machine is a
+/// container, else Vagrant (only VMs), else hybrid (both).
+pub fn generated(spec: &Spec) -> Result<(Runtime, Vec<isoloom_core::GeneratedFile>), RunError> {
+    [
+        (Runtime::Docker, Target::Docker),
+        (Runtime::Vagrant, Target::Vagrant),
+        (Runtime::Hybrid, Target::Hybrid),
+    ]
+    .into_iter()
+    .find_map(|(rt, t)| isoloom_core::generate(spec, t).ok().map(|f| (rt, f)))
+    .ok_or_else(|| {
+        RunError::NotDocker(
+            "This lab runs neither as containers nor as local VMs: export it and run it with \
+             `isoloom run` on a target that fits it."
+                .into(),
+        )
+    })
+}
+
 /// A lab's folder under the app's data directory: `<data>/labs/<name>/`.
 pub fn lab_dir(data: &Path, name: &str) -> PathBuf {
     data.join("labs").join(name)
 }
 
-/// Checks the spec and writes it with its Docker files into `dir`. Only labs of containers run
-/// here for now: a lab with VMs is exported and run with `isoloom run` instead.
-pub fn prepare(dir: &Path, yaml: &str) -> Result<Spec, RunError> {
+/// Checks the spec and writes it with its generated files into `dir`: Docker's when every machine
+/// is a container, else Vagrant's (only VMs) or the hybrid output's (VMs and containers).
+/// `own`: the lab's own files (provisioning scripts, appliance configurations), at the paths
+/// isoloom.yml gives them (relative, inside the lab's folder).
+pub fn prepare(dir: &Path, yaml: &str, own: &[(String, String)]) -> Result<Spec, RunError> {
+    for (path, _) in own {
+        let p = Path::new(path);
+        if p.is_absolute()
+            || p.components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(RunError::Spec(format!(
+                "`{path}` isn't a path inside the lab"
+            )));
+        }
+    }
     let spec = isoloom_core::parse(yaml).map_err(|e| RunError::Spec(e.to_string()))?;
     let problems = isoloom_core::validate(&spec);
     if !problems.is_empty() {
         let list: Vec<String> = problems.iter().map(|p| p.to_string()).collect();
         return Err(RunError::Spec(list.join("\n")));
     }
-    let files = isoloom_core::generate(&spec, Target::Docker).map_err(|_| {
-        RunError::NotDocker(
-            "The desktop app runs labs made of containers for now. This lab has VMs: export it and \
-             run it with `isoloom run`."
+    let (runtime, files) = generated(&spec)?;
+    if runtime != Runtime::Docker && !has("vagrant") {
+        return Err(RunError::NotDocker(
+            "This lab has VMs: they run with Vagrant (and VirtualBox or libvirt), which isn't \
+             installed. Install it from vagrantup.com, or export the lab."
                 .into(),
-        )
-    })?;
+        ));
+    }
     std::fs::create_dir_all(dir).map_err(|e| RunError::Io(e.to_string()))?;
     std::fs::write(dir.join("isoloom.yml"), yaml).map_err(|e| RunError::Io(e.to_string()))?;
-    for f in files {
-        let path = dir.join(&f.path);
+    let name = match runtime {
+        Runtime::Docker => "docker",
+        Runtime::Vagrant => "vagrant",
+        Runtime::Hybrid => "hybrid",
+    };
+    std::fs::write(dir.join(RUNTIME), name).map_err(|e| RunError::Io(e.to_string()))?;
+    let own = own.iter().map(|(p, c)| (p.as_str(), c.as_str()));
+    for (path, contents) in files
+        .iter()
+        .map(|f| (f.path.as_str(), f.contents.as_str()))
+        .chain(own)
+    {
+        let path = dir.join(path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| RunError::Io(e.to_string()))?;
         }
-        std::fs::write(&path, f.contents).map_err(|e| RunError::Io(e.to_string()))?;
+        std::fs::write(&path, contents).map_err(|e| RunError::Io(e.to_string()))?;
     }
     Ok(spec)
 }
@@ -109,10 +188,16 @@ pub fn run(mut cmd: Command, what: &str) -> Result<String, RunError> {
 }
 
 pub fn up(dir: &Path) -> Result<String, RunError> {
+    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        return crate::vms::up(dir, rt);
+    }
     run(compose(dir, &["up", "-d", "--wait"]), "Starting the lab")
 }
 
 pub fn down(dir: &Path) -> Result<String, RunError> {
+    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        return crate::vms::down(dir, rt);
+    }
     run(
         compose(dir, &["down", "--volumes", "--remove-orphans"]),
         "Stopping the lab",
@@ -142,6 +227,9 @@ pub fn console_command(dir: &Path, spec: &Spec, machine: &str) -> Result<String,
         .machines
         .get(machine)
         .ok_or_else(|| RunError::Spec(format!("no machine named `{machine}`")))?;
+    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        return Ok(crate::vms::console_command(dir, spec, rt, machine));
+    }
     let id = container(dir, machine)?;
     if m.docker.as_ref().is_some_and(|d| d.appliance.is_some()) {
         let nets = run(
@@ -241,6 +329,9 @@ pub fn machine_action(
 ) -> Result<String, RunError> {
     if !spec.machines.contains_key(machine) {
         return Err(RunError::Spec(format!("no machine named `{machine}`")));
+    }
+    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        return crate::vms::action(dir, spec, rt, machine, action);
     }
     let sidecar = format!("{machine}-routes");
     let services_out = run(
@@ -344,20 +435,35 @@ pub fn take_snapshot(
     machine: &str,
     label: &str,
 ) -> Result<Snapshot, RunError> {
-    let id = container(dir, machine)?;
     let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let image = format!("isothrum-snapshots/{lab}-{machine}:{created}");
-    run(
-        {
-            let mut c = Command::new("docker");
-            c.args(["commit", "--message", label, &id, &image]);
-            c
-        },
-        "Saving the machine",
-    )?;
+    let rt = runtime(dir);
+    let image = if rt == Runtime::Docker {
+        let id = container(dir, machine)?;
+        let image = format!("isothrum-snapshots/{lab}-{machine}:{created}");
+        run(
+            {
+                let mut c = Command::new("docker");
+                c.args(["commit", "--message", label, &id, &image]);
+                c
+            },
+            "Saving the machine",
+        )?;
+        image
+    } else {
+        let spec = lab_spec(dir)?;
+        if crate::vms::in_host(&spec, rt, machine) {
+            return Err(RunError::Spec(
+                "snapshots of a container in a lab with VMs come later: snapshot its VMs".into(),
+            ));
+        }
+        // Vagrant's own snapshot (the provider's), named like the record.
+        let name = format!("{machine}-{created}");
+        crate::vms::snapshot_save(dir, rt, machine, &name)?;
+        format!("vagrant:{name}")
+    };
     let snap = Snapshot {
         id: format!("{machine}-{created}"),
         machine: machine.into(),
@@ -384,6 +490,13 @@ pub fn use_snapshot(dir: &Path, machine: &str, id: Option<&str>) -> Result<Strin
         && !list.iter().any(|s| s.id == id && s.machine == machine)
     {
         return Err(RunError::Spec(format!("no snapshot `{id}` of `{machine}`")));
+    }
+    // A VM goes back to the snapshot's state and carries on from there: nothing to undo later.
+    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        return match id {
+            Some(id) => crate::vms::snapshot_restore(dir, rt, machine, id),
+            None => Ok(String::new()),
+        };
     }
     for s in list.iter_mut().filter(|s| s.machine == machine) {
         s.in_use = Some(s.id.as_str()) == id;
@@ -413,6 +526,10 @@ pub fn delete_snapshot(dir: &Path, id: &str) -> Result<(), RunError> {
         )));
     }
     let snap = list.remove(i);
+    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        crate::vms::snapshot_delete(dir, rt, &snap.machine, &snap.id)?;
+        return save_snapshots(dir, &list);
+    }
     let _ = run(
         {
             let mut c = Command::new("docker");
@@ -424,8 +541,18 @@ pub fn delete_snapshot(dir: &Path, id: &str) -> Result<(), RunError> {
     save_snapshots(dir, &list)
 }
 
+/// The lab's spec as last started (its folder's isoloom.yml).
+pub fn lab_spec(dir: &Path) -> Result<Spec, RunError> {
+    let yaml = std::fs::read_to_string(dir.join("isoloom.yml"))
+        .map_err(|_| RunError::Spec("start the lab first".into()))?;
+    isoloom_core::parse(&yaml).map_err(|e| RunError::Spec(e.to_string()))
+}
+
 /// The lab's services and their state, as `docker compose ps` reports them (one JSON per line).
 pub fn status(dir: &Path) -> Result<String, RunError> {
+    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        return crate::vms::status(dir, rt);
+    }
     run(
         compose(dir, &["ps", "--all", "--format", "json"]),
         "Reading the lab's state",
@@ -455,6 +582,9 @@ pub fn capture_script(prefix: &str) -> String {
 pub struct CapturePlan {
     pub container: String,
     pub prefix: String,
+    /// In a lab with VMs: the lab's folder, its runtime, the machine, and whether it's a
+    /// container in the Docker host VM.
+    pub vm: Option<(PathBuf, Runtime, String, bool)>,
 }
 
 /// Picks the machine to capture from: on `network`, the first one Isoloom attached to it.
@@ -467,6 +597,20 @@ pub fn plan_capture(dir: &Path, spec: &Spec, network: &str) -> Result<CapturePla
     let prefix = prefix_of(&net.cidr)
         .filter(|p| p.chars().all(|c| c.is_ascii_digit() || c == '.'))
         .ok_or_else(|| RunError::Spec(format!("`{}` isn't an IPv4 block", net.cidr)))?;
+    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        let machine = spec
+            .machines
+            .iter()
+            .find(|(_, m)| m.networks.contains_key(network))
+            .map(|(name, _)| name.clone())
+            .ok_or_else(|| RunError::Spec(format!("no machine is on `{network}`")))?;
+        let in_host = crate::vms::in_host(spec, rt, &machine);
+        return Ok(CapturePlan {
+            container: String::new(),
+            prefix,
+            vm: Some((dir.to_path_buf(), rt, machine, in_host)),
+        });
+    }
     let machine = spec
         .machines
         .iter()
@@ -480,11 +624,24 @@ pub fn plan_capture(dir: &Path, spec: &Spec, network: &str) -> Result<CapturePla
             "`{machine}` isn't running: start the lab first"
         )));
     }
-    Ok(CapturePlan { container, prefix })
+    Ok(CapturePlan {
+        container,
+        prefix,
+        vm: None,
+    })
 }
 
 /// The capture process: tcpdump in the machine's network namespace, pcap on stdout.
 pub fn capture_command(plan: &CapturePlan) -> Command {
+    if let Some((dir, rt, machine, in_host)) = &plan.vm {
+        return crate::vms::capture_command(
+            dir,
+            *rt,
+            machine,
+            *in_host,
+            &capture_script(&plan.prefix),
+        );
+    }
     let mut c = Command::new("docker");
     c.args([
         "run",
@@ -620,7 +777,7 @@ machines:
     #[test]
     fn a_lab_of_containers_gets_its_compose_file() {
         let dir = temp("prepare");
-        let spec = prepare(&dir, CONTAINERS).unwrap();
+        let spec = prepare(&dir, CONTAINERS, &[]).unwrap();
         assert_eq!(spec.name, "pair");
         let compose = std::fs::read_to_string(dir.join(".isoloom/docker/compose.yml")).unwrap();
         assert!(compose.contains("name: pair"));
@@ -629,10 +786,53 @@ machines:
     }
 
     #[test]
-    fn a_lab_with_vms_says_how_to_run_it() {
-        let err = prepare(&temp("vm"), WITH_VM).unwrap_err();
-        assert!(matches!(err, RunError::NotDocker(_)));
-        assert!(err.to_string().contains("isoloom run"));
+    fn a_lab_with_vms_runs_with_vagrant() {
+        let spec = isoloom_core::parse(WITH_VM).unwrap();
+        let (rt, files) = generated(&spec).unwrap();
+        assert_eq!(rt, Runtime::Hybrid);
+        assert!(
+            files
+                .iter()
+                .any(|f| f.path == ".isoloom/hybrid/Vagrantfile")
+        );
+        let only_vm = WITH_VM.replace(
+            "    docker: { image: \"alpine:3.20\" }\n",
+            "    vm: { os: debian-12 }\n",
+        );
+        let (rt, _) = generated(&isoloom_core::parse(&only_vm).unwrap()).unwrap();
+        assert_eq!(rt, Runtime::Vagrant);
+        // Prepared: the runtime is recorded and the Vagrantfile found (when Vagrant is installed).
+        let dir = temp("vm");
+        match prepare(&dir, WITH_VM, &[]) {
+            Ok(_) => {
+                assert_eq!(runtime(&dir), Runtime::Hybrid);
+                assert!(prepared(&dir));
+            }
+            Err(e) => assert!(!has("vagrant") && e.to_string().contains("Vagrant"), "{e}"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_labs_own_files_stay_inside_it() {
+        let dir = temp("own");
+        prepare(
+            &dir,
+            CONTAINERS,
+            &[("configs/r1.cfg".into(), "hostname r1\n".into())],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("configs/r1.cfg")).unwrap(),
+            "hostname r1\n"
+        );
+        for bad in ["../escape.sh", "/etc/passwd", "a/../../b"] {
+            assert!(
+                prepare(&dir, CONTAINERS, &[(bad.into(), String::new())]).is_err(),
+                "{bad}"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -640,6 +840,7 @@ machines:
         let err = prepare(
             &temp("bad"),
             "version: 1\nname: x\nnetworks: {}\nmachines: {}\n",
+            &[],
         );
         assert!(matches!(err, Err(RunError::Spec(_))));
     }
@@ -658,6 +859,7 @@ machines:
         let plan = CapturePlan {
             container: "abc123".into(),
             prefix: "10.10.1.".into(),
+            vm: None,
         };
         let cmd = capture_command(&plan);
         let args: Vec<String> = cmd
@@ -674,7 +876,7 @@ machines:
     fn one_machine_stops_starts_and_has_a_console() {
         let dir = std::env::temp_dir().join(format!("isothrum-machine-{}", std::process::id()));
         let yaml = "version: 1\nname: onem\nnetworks:\n  a: { cidr: 10.61.1.0/24 }\n  b: { cidr: 10.61.2.0/24 }\nreach: [{ from: a, to: b }]\nmachines:\n  pc: { networks: { a: 10 }, docker: { image: \"alpine:3.20\", idle: true } }\n  srv: { networks: { b: 10 }, docker: { image: \"alpine:3.20\", idle: true } }\n";
-        let spec = prepare(&dir, yaml).unwrap();
+        let spec = prepare(&dir, yaml, &[]).unwrap();
         up(&dir).unwrap();
         let running = |m: &str| {
             run(compose(&dir, &["ps", "-q", m]), "ps")
@@ -714,7 +916,7 @@ machines:
     fn a_snapshot_brings_a_machine_back_as_it_was() {
         let dir = std::env::temp_dir().join(format!("isothrum-snap-{}", std::process::id()));
         let yaml = "version: 1\nname: snap\nnetworks:\n  a: { cidr: 10.62.1.0/24 }\nmachines:\n  pc: { networks: { a: 10 }, docker: { image: \"alpine:3.20\", idle: true } }\n";
-        prepare(&dir, yaml).unwrap();
+        prepare(&dir, yaml, &[]).unwrap();
         up(&dir).unwrap();
         let sh = |cmd: &str| {
             run(

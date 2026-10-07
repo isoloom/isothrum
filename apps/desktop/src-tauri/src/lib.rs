@@ -3,6 +3,7 @@
 //! `window.__TAURI__` and shows Run, Stop and Capture only here.
 
 mod runner;
+mod vms;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -44,6 +45,8 @@ struct DesktopInfo {
     version: &'static str,
     /// Whether `docker` answers (installed, running, and this user may use it).
     docker: bool,
+    /// Whether Vagrant is installed (labs with VMs run with it).
+    vagrant: bool,
     wireshark: bool,
     /// Wireshark can show captures live (its `dumpcap` is usable by this account).
     live_capture: bool,
@@ -65,18 +68,36 @@ async fn desktop_info(app: AppHandle) -> Result<DesktopInfo, String> {
     Ok(DesktopInfo {
         version: env!("CARGO_PKG_VERSION"),
         docker,
+        vagrant: runner::has("vagrant"),
         wireshark: runner::has("wireshark"),
         live_capture: runner::live_capture_possible(),
         labs,
     })
 }
 
-/// Writes the lab (its isoloom.yml and Docker files) and starts it.
+/// One of the lab's own files (a provisioning script, an appliance's configuration).
+#[derive(serde::Deserialize)]
+struct LabFile {
+    path: String,
+    contents: String,
+}
+
+/// Writes the lab (its isoloom.yml, its own files and the generated ones) and starts it.
 #[tauri::command]
-async fn lab_up(app: AppHandle, name: String, yaml: String) -> Result<String, String> {
+async fn lab_up(
+    app: AppHandle,
+    name: String,
+    yaml: String,
+    files: Option<Vec<LabFile>>,
+) -> Result<String, String> {
     let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
+    let own: Vec<(String, String)> = files
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| (f.path, f.contents))
+        .collect();
     tauri::async_runtime::spawn_blocking(move || {
-        runner::prepare(&dir, &yaml)?;
+        runner::prepare(&dir, &yaml, &own)?;
         runner::up(&dir)
     })
     .await
@@ -108,7 +129,7 @@ async fn lab_down(
 #[tauri::command]
 async fn lab_status(app: AppHandle, name: String) -> Result<String, String> {
     let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
-    if !dir.join(".isoloom/docker/compose.yml").is_file() {
+    if !runner::prepared(&dir) {
         return Ok(String::new());
     }
     tauri::async_runtime::spawn_blocking(move || runner::status(&dir))
@@ -176,20 +197,13 @@ fn capture_stop(
     Ok(())
 }
 
-/// The lab's spec as last started (its folder's isoloom.yml).
-fn lab_spec(dir: &std::path::Path) -> Result<isoloom_core::Spec, runner::RunError> {
-    let yaml = std::fs::read_to_string(dir.join("isoloom.yml"))
-        .map_err(|_| runner::RunError::Spec("start the lab first".into()))?;
-    isoloom_core::parse(&yaml).map_err(|e| runner::RunError::Spec(e.to_string()))
-}
-
 /// Opens a terminal on one machine of the running lab (a shell, or SSH to a network appliance).
 #[tauri::command]
 async fn machine_console(app: AppHandle, name: String, machine: String) -> Result<(), String> {
     let name = checked(&name)?.to_string();
     let dir = runner::lab_dir(&data_dir(&app)?, &name);
     tauri::async_runtime::spawn_blocking(move || {
-        let spec = lab_spec(&dir)?;
+        let spec = runner::lab_spec(&dir)?;
         let cmd = runner::console_command(&dir, &spec, &machine)?;
         runner::open_terminal(&format!("{machine} ({name})"), &cmd)
     })
@@ -208,7 +222,7 @@ async fn machine_action(
 ) -> Result<String, String> {
     let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
     tauri::async_runtime::spawn_blocking(move || {
-        let spec = lab_spec(&dir)?;
+        let spec = runner::lab_spec(&dir)?;
         runner::machine_action(&dir, &spec, &machine, &action)
     })
     .await
