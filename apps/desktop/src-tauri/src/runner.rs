@@ -78,8 +78,12 @@ pub fn prepare(dir: &Path, yaml: &str) -> Result<Spec, RunError> {
 pub fn compose(dir: &Path, args: &[&str]) -> Command {
     let mut c = Command::new("docker");
     c.current_dir(dir)
-        .args(["compose", "-f", ".isoloom/docker/compose.yml"])
-        .args(args);
+        .args(["compose", "-f", ".isoloom/docker/compose.yml"]);
+    // Machines brought back from a snapshot run its image (see `restore_snapshot`).
+    if dir.join(SNAPSHOT_OVERRIDE).is_file() {
+        c.args(["-f", SNAPSHOT_OVERRIDE]);
+    }
+    c.args(args);
     c
 }
 
@@ -271,6 +275,153 @@ pub fn machine_action(
             "unknown action `{other}`: start, stop or restart"
         ))),
     }
+}
+
+// Snapshots: a machine's container saved as an image (`docker commit`), and brought back by
+// running the machine from that image. What's in the container is kept (files, a router's saved
+// configuration, a QEMU disk); named volumes aren't (`docker commit` leaves them out).
+
+/// The record of a lab's snapshots, in its folder.
+const SNAPSHOTS: &str = "snapshots.json";
+/// The Compose override that runs restored machines from their snapshot's image.
+const SNAPSHOT_OVERRIDE: &str = "snapshots.override.yml";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    pub id: String,
+    pub machine: String,
+    pub image: String,
+    pub label: String,
+    /// Seconds since the epoch.
+    pub created: u64,
+    /// The machine runs from this snapshot now.
+    #[serde(default)]
+    pub in_use: bool,
+}
+
+pub fn snapshots(dir: &Path) -> Vec<Snapshot> {
+    std::fs::read_to_string(dir.join(SNAPSHOTS))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_snapshots(dir: &Path, list: &[Snapshot]) -> Result<(), RunError> {
+    let text = serde_json::to_string_pretty(list).map_err(|e| RunError::Io(e.to_string()))?;
+    std::fs::write(dir.join(SNAPSHOTS), text).map_err(|e| RunError::Io(e.to_string()))?;
+    // The override: each machine in use from a snapshot, on that snapshot's image.
+    let used: Vec<&Snapshot> = list.iter().filter(|s| s.in_use).collect();
+    let path = dir.join(SNAPSHOT_OVERRIDE);
+    if used.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return Ok(());
+    }
+    let mut yaml = String::from("# Machines restored from a snapshot (Isothrum).\nservices:\n");
+    for s in used {
+        yaml.push_str(&format!("  {}:\n    image: {}\n", s.machine, s.image));
+    }
+    std::fs::write(path, yaml).map_err(|e| RunError::Io(e.to_string()))
+}
+
+/// The machine and its network sidecar, as Compose services.
+fn with_sidecar(dir: &Path, machine: &str) -> Result<Vec<String>, RunError> {
+    let services = run(
+        compose(dir, &["config", "--services"]),
+        "Reading the lab's services",
+    )?;
+    let sidecar = format!("{machine}-routes");
+    let mut out = vec![machine.to_string()];
+    if services.lines().any(|l| l.trim() == sidecar) {
+        out.push(sidecar);
+    }
+    Ok(out)
+}
+
+/// Saves a machine's container as an image (the machine pauses for the copy).
+pub fn take_snapshot(
+    dir: &Path,
+    lab: &str,
+    machine: &str,
+    label: &str,
+) -> Result<Snapshot, RunError> {
+    let id = container(dir, machine)?;
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let image = format!("isothrum-snapshots/{lab}-{machine}:{created}");
+    run(
+        {
+            let mut c = Command::new("docker");
+            c.args(["commit", "--message", label, &id, &image]);
+            c
+        },
+        "Saving the machine",
+    )?;
+    let snap = Snapshot {
+        id: format!("{machine}-{created}"),
+        machine: machine.into(),
+        image,
+        label: if label.trim().is_empty() {
+            "snapshot".into()
+        } else {
+            label.trim().into()
+        },
+        created,
+        in_use: false,
+    };
+    let mut list = snapshots(dir);
+    list.push(snap.clone());
+    save_snapshots(dir, &list)?;
+    Ok(snap)
+}
+
+/// Runs the machine from a snapshot (or, with `None`, from its own image again), recreating it
+/// with its sidecar.
+pub fn use_snapshot(dir: &Path, machine: &str, id: Option<&str>) -> Result<String, RunError> {
+    let mut list = snapshots(dir);
+    if let Some(id) = id
+        && !list.iter().any(|s| s.id == id && s.machine == machine)
+    {
+        return Err(RunError::Spec(format!("no snapshot `{id}` of `{machine}`")));
+    }
+    for s in list.iter_mut().filter(|s| s.machine == machine) {
+        s.in_use = Some(s.id.as_str()) == id;
+    }
+    save_snapshots(dir, &list)?;
+    let services = with_sidecar(dir, machine)?;
+    let names: Vec<&str> = services.iter().map(String::as_str).collect();
+    run(
+        compose(
+            dir,
+            &[&["up", "-d", "--no-deps", "--force-recreate"][..], &names].concat(),
+        ),
+        "Bringing the machine back",
+    )
+}
+
+/// Forgets a snapshot and removes its image (not while the machine runs from it).
+pub fn delete_snapshot(dir: &Path, id: &str) -> Result<(), RunError> {
+    let mut list = snapshots(dir);
+    let Some(i) = list.iter().position(|s| s.id == id) else {
+        return Err(RunError::Spec(format!("no snapshot `{id}`")));
+    };
+    if list[i].in_use {
+        return Err(RunError::Spec(format!(
+            "`{}` runs from this snapshot: bring it back to its own image first",
+            list[i].machine
+        )));
+    }
+    let snap = list.remove(i);
+    let _ = run(
+        {
+            let mut c = Command::new("docker");
+            c.args(["rmi", &snap.image]);
+            c
+        },
+        "Removing the snapshot",
+    );
+    save_snapshots(dir, &list)
 }
 
 /// The lab's services and their state, as `docker compose ps` reports them (one JSON per line).
@@ -553,6 +704,33 @@ machines:
         .unwrap();
         assert!(routes.contains("10.61.2.0/24 via"), "{routes}");
         assert!(machine_action(&dir, &spec, "nobody", "stop").is_err());
+        down(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs Docker (run with `--ignored`): a snapshot keeps what was in the machine.
+    #[test]
+    #[ignore]
+    fn a_snapshot_brings_a_machine_back_as_it_was() {
+        let dir = std::env::temp_dir().join(format!("isothrum-snap-{}", std::process::id()));
+        let yaml = "version: 1\nname: snap\nnetworks:\n  a: { cidr: 10.62.1.0/24 }\nmachines:\n  pc: { networks: { a: 10 }, docker: { image: \"alpine:3.20\", idle: true } }\n";
+        prepare(&dir, yaml).unwrap();
+        up(&dir).unwrap();
+        let sh = |cmd: &str| run(compose(&dir, &["exec", "-T", "pc", "sh", "-c", cmd]), "exec");
+        sh("echo kept > /root/note").unwrap();
+        let snap = take_snapshot(&dir, "snap", "pc", "before the change").unwrap();
+        sh("rm /root/note").unwrap();
+        use_snapshot(&dir, "pc", Some(&snap.id)).unwrap();
+        assert_eq!(sh("cat /root/note").unwrap().trim(), "kept", "restored");
+        assert!(snapshots(&dir)[0].in_use);
+        assert!(delete_snapshot(&dir, &snap.id).is_err(), "not while in use");
+        use_snapshot(&dir, "pc", None).unwrap();
+        assert!(sh("cat /root/note").is_err(), "its own image again");
+        assert!(!dir.join(SNAPSHOT_OVERRIDE).exists());
+        delete_snapshot(&dir, &snap.id).unwrap();
+        assert!(snapshots(&dir).is_empty());
+        let gone = Command::new("docker").args(["image", "inspect", &snap.image]).output().unwrap();
+        assert!(!gone.status.success(), "its image is removed");
         down(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }

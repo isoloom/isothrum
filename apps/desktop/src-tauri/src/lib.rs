@@ -215,6 +215,59 @@ async fn machine_action(
     .map_err(|e| e.to_string())
 }
 
+/// The lab's snapshots.
+#[tauri::command]
+fn snapshot_list(app: AppHandle, name: String) -> Result<Vec<runner::Snapshot>, String> {
+    Ok(runner::snapshots(&runner::lab_dir(
+        &data_dir(&app)?,
+        checked(&name)?,
+    )))
+}
+
+/// Saves one machine of the running lab.
+#[tauri::command]
+async fn snapshot_take(
+    app: AppHandle,
+    name: String,
+    machine: String,
+    label: String,
+) -> Result<runner::Snapshot, String> {
+    let name = checked(&name)?.to_string();
+    let dir = runner::lab_dir(&data_dir(&app)?, &name);
+    tauri::async_runtime::spawn_blocking(move || {
+        runner::take_snapshot(&dir, &name, &machine, &label)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+/// Runs a machine from one of its snapshots (`id`), or from its own image again (no `id`).
+#[tauri::command]
+async fn snapshot_use(
+    app: AppHandle,
+    name: String,
+    machine: String,
+    id: Option<String>,
+) -> Result<String, String> {
+    let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        runner::use_snapshot(&dir, &machine, id.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn snapshot_delete(app: AppHandle, name: String, id: String) -> Result<(), String> {
+    let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
+    tauri::async_runtime::spawn_blocking(move || runner::delete_snapshot(&dir, &id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(Captures::default())
@@ -226,7 +279,11 @@ pub fn run() {
             capture_start,
             capture_stop,
             machine_console,
-            machine_action
+            machine_action,
+            snapshot_list,
+            snapshot_take,
+            snapshot_use,
+            snapshot_delete
         ])
         .setup(|app| {
             let url = std::env::var("ISOTHRUM_URL").unwrap_or_else(|_| EDITOR_URL.to_string());
