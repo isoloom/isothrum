@@ -1503,7 +1503,7 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 [[package]]
 name = "isoloom-core"
 version = "0.8.1"
-source = "git+https://github.com/isoloom/isoloom?rev=39b1d9cbb109a2545c3d64086b2dd548558397ba#39b1d9cbb109a2545c3d64086b2dd548558397ba"
+source = "git+https://github.com/isoloom/isoloom?rev=164b40091b570e72868bf6a53c89038899a37639#164b40091b570e72868bf6a53c89038899a37639"
 dependencies = [
  "hcl-rs",
  "indexmap 2.14.2",

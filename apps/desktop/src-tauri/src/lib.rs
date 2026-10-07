@@ -20,8 +20,18 @@ struct Captures(Mutex<HashMap<String, runner::Capture>>);
 
 /// Lab names come from the editor and become folder names: kebab-case only, nothing else.
 fn checked(name: &str) -> Result<&str, String> {
-    let ok = !name.is_empty() && name.len() <= 63 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if ok { Ok(name) } else { Err(format!("`{name}` isn't a lab name (lowercase letters, digits and dashes)")) }
+    let ok = !name.is_empty()
+        && name.len() <= 63
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if ok {
+        Ok(name)
+    } else {
+        Err(format!(
+            "`{name}` isn't a lab name (lowercase letters, digits and dashes)"
+        ))
+    }
 }
 
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -74,7 +84,11 @@ async fn lab_up(app: AppHandle, name: String, yaml: String) -> Result<String, St
 }
 
 #[tauri::command]
-async fn lab_down(app: AppHandle, captures: State<'_, Captures>, name: String) -> Result<String, String> {
+async fn lab_down(
+    app: AppHandle,
+    captures: State<'_, Captures>,
+    name: String,
+) -> Result<String, String> {
     let name = checked(&name)?.to_string();
     // Stopping the lab ends its captures too.
     if let Ok(mut all) = captures.0.lock() {
@@ -110,19 +124,33 @@ struct CaptureStarted {
 
 /// Captures a LAN's or a cable's traffic (`network` is its name in isoloom.yml).
 #[tauri::command]
-async fn capture_start(app: AppHandle, captures: State<'_, Captures>, name: String, network: String) -> Result<CaptureStarted, String> {
+async fn capture_start(
+    app: AppHandle,
+    captures: State<'_, Captures>,
+    name: String,
+    network: String,
+) -> Result<CaptureStarted, String> {
     let name = checked(&name)?.to_string();
     let data = data_dir(&app)?;
     let dir = runner::lab_dir(&data, &name);
     let key = format!("{name}/{network}");
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let file = data.join("captures").join(format!("{name}-{network}-{stamp}.pcap"));
-    let capture = tauri::async_runtime::spawn_blocking(move || -> Result<runner::Capture, runner::RunError> {
-        let yaml = std::fs::read_to_string(dir.join("isoloom.yml")).map_err(|_| runner::RunError::Spec("start the lab first".into()))?;
-        let spec = isoloom_core::parse(&yaml).map_err(|e| runner::RunError::Spec(e.to_string()))?;
-        let plan = runner::plan_capture(&dir, &spec, &network)?;
-        runner::start_capture(&plan, &file)
-    })
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let file = data
+        .join("captures")
+        .join(format!("{name}-{network}-{stamp}.pcap"));
+    let capture = tauri::async_runtime::spawn_blocking(
+        move || -> Result<runner::Capture, runner::RunError> {
+            let yaml = std::fs::read_to_string(dir.join("isoloom.yml"))
+                .map_err(|_| runner::RunError::Spec("start the lab first".into()))?;
+            let spec =
+                isoloom_core::parse(&yaml).map_err(|e| runner::RunError::Spec(e.to_string()))?;
+            let plan = runner::plan_capture(&dir, &spec, &network)?;
+            runner::start_capture(&plan, &file)
+        },
+    )
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
@@ -135,7 +163,11 @@ async fn capture_start(app: AppHandle, captures: State<'_, Captures>, name: Stri
 }
 
 #[tauri::command]
-fn capture_stop(captures: State<'_, Captures>, name: String, network: String) -> Result<(), String> {
+fn capture_stop(
+    captures: State<'_, Captures>,
+    name: String,
+    network: String,
+) -> Result<(), String> {
     let key = format!("{}/{network}", checked(&name)?);
     if let Some(mut c) = captures.0.lock().map_err(|e| e.to_string())?.remove(&key) {
         c.stop();
@@ -143,10 +175,59 @@ fn capture_stop(captures: State<'_, Captures>, name: String, network: String) ->
     Ok(())
 }
 
+/// The lab's spec as last started (its folder's isoloom.yml).
+fn lab_spec(dir: &std::path::Path) -> Result<isoloom_core::Spec, runner::RunError> {
+    let yaml = std::fs::read_to_string(dir.join("isoloom.yml"))
+        .map_err(|_| runner::RunError::Spec("start the lab first".into()))?;
+    isoloom_core::parse(&yaml).map_err(|e| runner::RunError::Spec(e.to_string()))
+}
+
+/// Opens a terminal on one machine of the running lab (a shell, or SSH to a network appliance).
+#[tauri::command]
+async fn machine_console(app: AppHandle, name: String, machine: String) -> Result<(), String> {
+    let name = checked(&name)?.to_string();
+    let dir = runner::lab_dir(&data_dir(&app)?, &name);
+    tauri::async_runtime::spawn_blocking(move || {
+        let spec = lab_spec(&dir)?;
+        let cmd = runner::console_command(&dir, &spec, &machine)?;
+        runner::open_terminal(&format!("{machine} ({name})"), &cmd)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+/// Starts, stops or restarts one machine of the running lab.
+#[tauri::command]
+async fn machine_action(
+    app: AppHandle,
+    name: String,
+    machine: String,
+    action: String,
+) -> Result<String, String> {
+    let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        let spec = lab_spec(&dir)?;
+        runner::machine_action(&dir, &spec, &machine, &action)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(Captures::default())
-        .invoke_handler(tauri::generate_handler![desktop_info, lab_up, lab_down, lab_status, capture_start, capture_stop])
+        .invoke_handler(tauri::generate_handler![
+            desktop_info,
+            lab_up,
+            lab_down,
+            lab_status,
+            capture_start,
+            capture_stop,
+            machine_console,
+            machine_action
+        ])
         .setup(|app| {
             let url = std::env::var("ISOTHRUM_URL").unwrap_or_else(|_| EDITOR_URL.to_string());
             let url = url.parse().map_err(|e| format!("ISOTHRUM_URL: {e}"))?;
