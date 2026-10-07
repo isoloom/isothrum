@@ -178,6 +178,14 @@ fn bundle_filtered(topology_json: &str, target_dir: Option<&str>) -> Result<Vec<
     // Starter scripts for the VMs' provisioning steps, next to isoloom.yml where its paths point;
     // a one-target download only gets those its files use (none for Docker).
     let spec = isoloom_core::parse(&yaml).map_err(|e| e.to_string())?;
+    // Appliances' own configurations (IOS commands), where isoloom.yml points.
+    if let Ok(topo) = serde_json::from_str::<isothrum_core::Topology>(topology_json) {
+        for (path, contents) in isothrum_core::config_files(&topo) {
+            if target_dir.is_none() || files.iter().any(|f| f.contents.contains(&path)) {
+                add(&path, &contents)?;
+            }
+        }
+    }
     for s in isothrum_core::starters::starters(&spec) {
         if target_dir.is_none() || files.iter().any(|f| f.contents.contains(&s.path)) {
             add(&s.path, &s.contents)?;
@@ -399,5 +407,52 @@ mod tests {
                 .any(|f| f.path.ends_with("docker/compose.yml")
                     && f.contents.contains("netem delay 40ms loss 0.5%"))
         );
+    }
+
+    #[test]
+    fn a_cisco_iol_router_is_its_lans_gateway_with_its_config() {
+        let t = r#"{"name":"iol","networks":{"a":{"cidr":"10.30.1.0/24"},"b":{"cidr":"10.30.2.0/24"}},"nodes":{
+            "r1":{"kind":{"container":{"image":"vrnetlab/cisco_iol:17.12.01","appliance":"cisco-iol","config":"router ospf 1\n network 10.30.0.0 0.0.255.255 area 0"}},"networks":{"a":null}},
+            "r2":{"kind":{"container":{"image":"vrnetlab/cisco_iol:17.12.01","appliance":"cisco-iol"}},"networks":{"b":null}},
+            "pc":{"kind":{"container":{"image":"alpine:3.20","idle":true}},"networks":{"a":null}}},
+            "links":[{"a":{"node":"r1","port":"eth1"},"b":{"node":"r2","port":"eth1"}}]}"#;
+        let plan = plan(t);
+        assert!(
+            plan.ok && plan.problems.is_empty(),
+            "{:?} {:?}",
+            plan.error,
+            plan.problems
+        );
+        let yml = plan.isoloom_yml.unwrap();
+        assert!(
+            yml.contains("gateway: r1") && yml.contains("gateway: r2"),
+            "{yml}"
+        );
+        assert!(
+            yml.contains("appliance: cisco-iol") && yml.contains("config: configs/r1.cfg"),
+            "{yml}"
+        );
+        assert_eq!(
+            plan.addresses["r1"][0],
+            ("a".to_string(), "10.30.1.1".to_string())
+        );
+        let cfg = plan
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("appliances/r1/base.txt"))
+            .unwrap();
+        assert!(
+            cfg.contents.contains(
+                "interface Ethernet0/1\n description a\n ip address 10.30.1.1 255.255.255.0"
+            ),
+            "{}",
+            cfg.contents
+        );
+        let mut zip =
+            zip::ZipArchive::new(Cursor::new(bundle_target_bytes(t, "docker").unwrap())).unwrap();
+        let mut own = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("configs/r1.cfg").unwrap(), &mut own)
+            .unwrap();
+        assert!(own.starts_with("router ospf 1"));
     }
 }

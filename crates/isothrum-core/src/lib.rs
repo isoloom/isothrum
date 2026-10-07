@@ -86,6 +86,12 @@ pub enum Kind {
         /// machine to work from (Isoloom's `docker.idle`).
         #[serde(default)]
         idle: bool,
+        /// A network OS Isoloom wires as its image expects (Cisco IOL, as vrnetlab builds it).
+        #[serde(default)]
+        appliance: Option<isoloom_core::Appliance>,
+        /// The appliance's own configuration (IOS commands), written to `configs/<name>.cfg`.
+        #[serde(default)]
+        config: Option<String>,
     },
     Vm {
         os: String,
@@ -269,12 +275,22 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
             ..Machine::default()
         };
         match &node.kind {
-            Kind::Container { image, idle } => {
+            Kind::Container {
+                image,
+                idle,
+                appliance,
+                config,
+            } => {
                 m.docker = Some(DockerImpl {
                     image: Some(image.clone()),
                     build: None,
                     init: vec![],
-                    idle: *idle,
+                    idle: *idle && appliance.is_none(),
+                    appliance: *appliance,
+                    config: config
+                        .as_ref()
+                        .filter(|c| !c.trim().is_empty())
+                        .map(|_| config_path(name)),
                 });
             }
             Kind::Router {} => unreachable!("routers are skipped above"),
@@ -421,6 +437,33 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         }
     }
 
+    // A Cisco IOL router on a LAN is that LAN's gateway (at its gateway address): the machines on
+    // it route through IOS, as behind a real router.
+    for (lan, net) in networks
+        .iter_mut()
+        .filter(|(n, _)| topo.networks.contains_key(*n))
+    {
+        let router = topo.nodes.iter().find(|(name, n)| {
+            matches!(
+                n.kind,
+                Kind::Container {
+                    appliance: Some(isoloom_core::Appliance::CiscoIol),
+                    ..
+                }
+            ) && machines
+                .get(*name)
+                .is_some_and(|m| m.networks.contains_key(lan))
+        });
+        if let Some((name, _)) = router
+            && let Some(c) = isoloom_core::validate::Cidr::parse(&net.cidr)
+        {
+            net.gateway = Some(name.clone());
+            machines[name]
+                .networks
+                .insert(lan.clone(), c.gateway_octet());
+        }
+    }
+
     let (networks, machines, reach) = nest_vlans(topo, networks, machines, reach);
     Ok(Spec {
         version: 1,
@@ -438,6 +481,33 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         tools: IndexMap::new(),
         clones: IndexMap::new(),
     })
+}
+
+/// Where an appliance's own configuration goes in the project.
+pub fn config_path(machine: &str) -> String {
+    format!("configs/{machine}.cfg")
+}
+
+/// The appliances' own configurations, as files of the project (path, contents).
+pub fn config_files(topo: &Topology) -> Vec<(String, String)> {
+    topo.nodes
+        .iter()
+        .filter_map(|(name, n)| match &n.kind {
+            Kind::Container {
+                appliance: Some(_),
+                config: Some(c),
+                ..
+            } if !c.trim().is_empty() => Some((
+                config_path(name),
+                if c.ends_with('\n') {
+                    c.clone()
+                } else {
+                    format!("{c}\n")
+                },
+            )),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The name a VLAN LAN has in the spec: `<switch>.vlan<id>` (`None` for a plain LAN).
@@ -644,6 +714,8 @@ mod tests {
             node(Kind::Container {
                 image: "frrouting/frr:v8.5.2".into(),
                 idle: false,
+                appliance: None,
+                config: None,
             }),
         );
         nodes.insert(
@@ -772,6 +844,8 @@ mod tests {
             node(Kind::Container {
                 image: "alpine:3.20".into(),
                 idle: true,
+                appliance: None,
+                config: None,
             }),
         );
         topo.nodes["extra"].networks.insert("office".into(), None);
@@ -834,6 +908,8 @@ mod tests {
         topo.nodes["router"].kind = Kind::Container {
             image: "alpine:3.20".into(),
             idle: true,
+            appliance: None,
+            config: None,
         };
         let spec = compile(&topo).unwrap();
         assert!(spec.machines["router"].docker.as_ref().unwrap().idle);
