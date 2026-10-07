@@ -307,6 +307,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
                 docker: None,
                 vlans: IndexMap::new(),
                 tc: lan.tc.clone(),
+                vlan: None,
             },
         );
 
@@ -391,6 +392,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
                 docker: None,
                 vlans: IndexMap::new(),
                 tc: link.tc.clone(),
+                vlan: None,
             },
         );
         for (end, octet) in [(&link.a.node, a_octet), (&link.b.node, b_octet)] {
@@ -483,6 +485,7 @@ fn nest_vlans(
             docker: None,
             vlans: IndexMap::new(),
             tc: None,
+            vlan: None,
         });
         parent.vlans.insert(
             id,
