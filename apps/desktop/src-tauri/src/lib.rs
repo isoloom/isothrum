@@ -11,8 +11,9 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
-/// The editor's address; `ISOTHRUM_URL` points the window at a local build while developing.
-const EDITOR_URL: &str = "https://www.isothrum.com/en";
+// The window shows the editor bundled with the app (`apps/desktop/editor`, built from the website
+// by `npm run editor`): it works offline. `ISOTHRUM_URL` points it at a site instead (isothrum.com
+// for accounts and saved projects, or a local build while developing).
 
 /// Captures in progress, by `<lab>/<network>`.
 #[derive(Default)]
@@ -286,9 +287,13 @@ pub fn run() {
             snapshot_delete
         ])
         .setup(|app| {
-            let url = std::env::var("ISOTHRUM_URL").unwrap_or_else(|_| EDITOR_URL.to_string());
-            let url = url.parse().map_err(|e| format!("ISOTHRUM_URL: {e}"))?;
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+            let page = match std::env::var("ISOTHRUM_URL") {
+                Ok(url) => {
+                    WebviewUrl::External(url.parse().map_err(|e| format!("ISOTHRUM_URL: {e}"))?)
+                }
+                Err(_) => WebviewUrl::App("index.html".into()),
+            };
+            WebviewWindowBuilder::new(app, "main", page)
                 .title("Isothrum")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(900.0, 600.0)

@@ -716,7 +716,12 @@ machines:
         let yaml = "version: 1\nname: snap\nnetworks:\n  a: { cidr: 10.62.1.0/24 }\nmachines:\n  pc: { networks: { a: 10 }, docker: { image: \"alpine:3.20\", idle: true } }\n";
         prepare(&dir, yaml).unwrap();
         up(&dir).unwrap();
-        let sh = |cmd: &str| run(compose(&dir, &["exec", "-T", "pc", "sh", "-c", cmd]), "exec");
+        let sh = |cmd: &str| {
+            run(
+                compose(&dir, &["exec", "-T", "pc", "sh", "-c", cmd]),
+                "exec",
+            )
+        };
         sh("echo kept > /root/note").unwrap();
         let snap = take_snapshot(&dir, "snap", "pc", "before the change").unwrap();
         sh("rm /root/note").unwrap();
@@ -729,7 +734,10 @@ machines:
         assert!(!dir.join(SNAPSHOT_OVERRIDE).exists());
         delete_snapshot(&dir, &snap.id).unwrap();
         assert!(snapshots(&dir).is_empty());
-        let gone = Command::new("docker").args(["image", "inspect", &snap.image]).output().unwrap();
+        let gone = Command::new("docker")
+            .args(["image", "inspect", &snap.image])
+            .output()
+            .unwrap();
         assert!(!gone.status.success(), "its image is removed");
         down(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
