@@ -11,6 +11,12 @@
     "allow-lab-down",
     "allow-lab-status",
     "allow-capture-start",
-    "allow-capture-stop"
+    "allow-capture-stop",
+    "allow-machine-console",
+    "allow-machine-action",
+    "allow-snapshot-list",
+    "allow-snapshot-take",
+    "allow-snapshot-use",
+    "allow-snapshot-delete"
   ]
 }

@@ -7,6 +7,12 @@ fn main() {
         "lab_status",
         "capture_start",
         "capture_stop",
+        "machine_console",
+        "machine_action",
+        "snapshot_list",
+        "snapshot_take",
+        "snapshot_use",
+        "snapshot_delete",
     ];
     tauri_build::try_build(
         tauri_build::Attributes::new()
