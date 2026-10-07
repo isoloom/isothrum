@@ -281,8 +281,11 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
                 appliance,
                 config,
             } => {
+                // A Dynamips router has no image: Isoloom builds the emulator, the user's IOS
+                // image goes in the download's `images/` folder.
+                let dynamips = *appliance == Some(isoloom_core::Appliance::CiscoDynamips);
                 m.docker = Some(DockerImpl {
-                    image: Some(image.clone()),
+                    image: (!dynamips).then(|| image.clone()),
                     build: None,
                     init: vec![],
                     idle: *idle && appliance.is_none(),
@@ -291,6 +294,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
                         .as_ref()
                         .filter(|c| !c.trim().is_empty())
                         .map(|_| config_path(name)),
+                    firmware: dynamips.then(|| firmware_path(name)),
                 });
             }
             Kind::Router {} => unreachable!("routers are skipped above"),
@@ -437,7 +441,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         }
     }
 
-    // A Cisco IOL router on a LAN is that LAN's gateway (at its gateway address): the machines on
+    // A Cisco router (IOL, IOSv, IOS XE, Dynamips) on a LAN is that LAN's gateway (at its gateway address): the machines on
     // it route through IOS, as behind a real router.
     for (lan, net) in networks
         .iter_mut()
@@ -447,7 +451,13 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
             matches!(
                 n.kind,
                 Kind::Container {
-                    appliance: Some(isoloom_core::Appliance::CiscoIol),
+                    appliance: Some(
+                        isoloom_core::Appliance::CiscoIol
+                            | isoloom_core::Appliance::CiscoVios
+                            | isoloom_core::Appliance::CiscoCsr1000v
+                            | isoloom_core::Appliance::CiscoC8000v
+                            | isoloom_core::Appliance::CiscoDynamips
+                    ),
                     ..
                 }
             ) && machines
@@ -481,6 +491,11 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         tools: IndexMap::new(),
         clones: IndexMap::new(),
     })
+}
+
+/// Where a Dynamips router's IOS image goes in the project (the user's to add).
+pub fn firmware_path(machine: &str) -> String {
+    format!("images/{machine}.bin")
 }
 
 /// Where an appliance's own configuration goes in the project.
