@@ -17,6 +17,8 @@
     "allow-snapshot-list",
     "allow-snapshot-take",
     "allow-snapshot-use",
-    "allow-snapshot-delete"
+    "allow-snapshot-delete",
+    "allow-update-check",
+    "allow-update-install"
   ]
 }

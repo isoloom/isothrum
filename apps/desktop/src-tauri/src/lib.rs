@@ -269,8 +269,52 @@ async fn snapshot_delete(app: AppHandle, name: String, id: String) -> Result<(),
         .map_err(|e| e.to_string())
 }
 
+/// A newer release, if there is one (the updater checks GitHub's latest release, signed with
+/// the app's key).
+#[derive(Serialize)]
+struct UpdateInfo {
+    version: String,
+    notes: Option<String>,
+}
+
+#[tauri::command]
+async fn update_check(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app
+        .updater()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(update.map(|u| UpdateInfo {
+        version: u.version,
+        notes: u.body,
+    }))
+}
+
+/// Downloads and installs the newer release, then restarts the app on it.
+#[tauri::command]
+async fn update_install(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let Some(update) = app
+        .updater()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart();
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Captures::default())
         .invoke_handler(tauri::generate_handler![
             desktop_info,
@@ -284,7 +328,9 @@ pub fn run() {
             snapshot_list,
             snapshot_take,
             snapshot_use,
-            snapshot_delete
+            snapshot_delete,
+            update_check,
+            update_install
         ])
         .setup(|app| {
             let page = match std::env::var("ISOTHRUM_URL") {

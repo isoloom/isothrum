@@ -13,6 +13,8 @@ fn main() {
         "snapshot_take",
         "snapshot_use",
         "snapshot_delete",
+        "update_check",
+        "update_install",
     ];
     tauri_build::try_build(
         tauri_build::Attributes::new()

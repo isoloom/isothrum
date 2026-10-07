@@ -5,7 +5,7 @@
     "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
-    "editor": "node ${ISOTHRUM_WEBSITE:-../../../isothrum-website}/scripts/build-desktop-editor.mjs editor"
+    "editor": "node scripts/editor.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.1"

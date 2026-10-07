@@ -30,6 +30,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZGRTBGMzJEOTQxMjkyNTMKUldSVGtoS1VMZlBnLzN1RnFmTXFzNStOaUxIRmh3b1hZSC84dW1TVStoZjNwUGtPd2NVbU8wQlUK",
+      "endpoints": [
+        "https://github.com/isoloom/isothrum/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

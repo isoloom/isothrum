@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine:
+    name: Engine (isothrum-core, isothrum-wasm)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo test
+      - name: WebAssembly build
+        run: |
+          curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+          wasm-pack build crates/isothrum-wasm --target web --out-dir ../../web/pkg --release
+
+  desktop:
+    name: Desktop app
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries (WebKitGTK)
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      # The bundled editor comes from the website at release; a placeholder page builds here.
+      - run: mkdir -p ../editor && echo '<!doctype html><title>Isothrum</title>' > ../editor/index.html
+      - run: cargo fmt --check
+      - run: cargo test

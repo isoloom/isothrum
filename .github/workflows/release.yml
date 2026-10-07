@@ -1,0 +1,102 @@
+name: Release
+
+# Push a tag like v0.2.0: installers for Linux (.deb, AppImage), macOS (.dmg, universal) and
+# Windows (.msi), on a draft release with latest.json for the app's updater.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+            args: ""
+          - name: macOS
+            os: macos-latest
+            args: "--target universal-apple-darwin"
+          - name: Windows
+            os: windows-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The editor the app bundles is built from the website's sources (private for now: a
+      # read-only token; once the repository is public, the default token is enough).
+      - uses: actions/checkout@v4
+        with:
+          repository: isoloom/isothrum-website
+          path: website
+          token: ${{ secrets.WEBSITE_REPO_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: System libraries (WebKitGTK)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Website dependencies
+        run: npm ci
+        working-directory: website
+
+      - name: Desktop dependencies
+        run: npm ci
+        working-directory: apps/desktop
+
+      # Windows signing, when its secrets exist: the certificate into the user store, and its
+      # thumbprint for Tauri.
+      - name: Windows certificate
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $pw = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+          $config = @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = "sha256"; timestampUrl = "http://timestamp.digicert.com" } } } | ConvertTo-Json -Compress -Depth 5
+          "TAURI_SIGN_CONFIG=--config $config" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISOTHRUM_WEBSITE: ${{ github.workspace }}/website
+          # The updater's signature (the public key is in tauri.conf.json).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS signing and notarization, used when present.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: Isothrum ${{ github.ref_name }}
+          releaseBody: See the assets below to install Isothrum.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }} ${{ env.TAURI_SIGN_CONFIG }}
