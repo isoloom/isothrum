@@ -449,28 +449,16 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         }
     }
 
-    // A Cisco router (IOL, IOSv, IOS XE, Dynamips) on a LAN is that LAN's gateway (at its gateway address): the machines on
-    // it route through IOS, as behind a real router.
-    for (lan, net) in networks
-        .iter_mut()
-        .filter(|(n, _)| topo.networks.contains_key(*n))
-    {
+    // A Cisco router on a LAN is that LAN's gateway (at its gateway address): the machines on it
+    // route through IOS, as behind a real router. Not on a VLAN: Isoloom's VLANs have no gateway,
+    // so there the router stays a member, at the address it already has.
+    let plain_lan = |n: &String| topo.networks.get(n).is_some_and(|l| vlan_ref(l).is_none());
+    for (lan, net) in networks.iter_mut().filter(|(n, _)| plain_lan(n)) {
         let router = topo.nodes.iter().find(|(name, n)| {
-            matches!(
-                n.kind,
-                Kind::Container {
-                    appliance: Some(
-                        isoloom_core::Appliance::CiscoIol
-                            | isoloom_core::Appliance::CiscoVios
-                            | isoloom_core::Appliance::CiscoCsr1000v
-                            | isoloom_core::Appliance::CiscoC8000v
-                            | isoloom_core::Appliance::CiscoDynamips
-                    ),
-                    ..
-                }
-            ) && machines
-                .get(*name)
-                .is_some_and(|m| m.networks.contains_key(lan))
+            is_cisco_router(&n.kind)
+                && machines
+                    .get(*name)
+                    .is_some_and(|m| m.networks.contains_key(lan))
         });
         if let Some((name, _)) = router
             && let Some(c) = isoloom_core::validate::Cidr::parse(&net.cidr)
@@ -499,6 +487,23 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
         tools: IndexMap::new(),
         clones: IndexMap::new(),
     })
+}
+
+/// A Cisco router appliance: IOL, IOSv, CSR 1000v, Catalyst 8000v or Dynamips.
+fn is_cisco_router(kind: &Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Container {
+            appliance: Some(
+                isoloom_core::Appliance::CiscoIol
+                    | isoloom_core::Appliance::CiscoVios
+                    | isoloom_core::Appliance::CiscoCsr1000v
+                    | isoloom_core::Appliance::CiscoC8000v
+                    | isoloom_core::Appliance::CiscoDynamips
+            ),
+            ..
+        }
+    )
 }
 
 /// Where a Dynamips router's IOS image goes in the project (the user's to add).
@@ -854,6 +859,34 @@ mod tests {
                 "spanning-tree mode rapid-pvst\n".to_string()
             )]
         );
+    }
+
+    /// A Cisco router on a switch's VLAN: Isoloom's VLANs have no gateway, so the router joins it
+    /// at an ordinary address, and the lab still builds.
+    #[test]
+    fn a_cisco_router_on_a_vlan_is_a_member_of_it() {
+        let topo: Topology = serde_json::from_str(
+            r#"{
+              "name": "router-on-vlan",
+              "nodes": {
+                "pc": { "kind": { "container": { "image": "alpine:3.20", "idle": true } }, "networks": { "vlan10": null } },
+                "r": { "kind": { "container": { "image": "vrnetlab/cisco_iol:17.12.01", "appliance": "cisco-iol" } }, "networks": { "vlan10": null, "office": null } }
+              },
+              "networks": {
+                "office": { "cidr": "10.10.1.0/24" },
+                "vlan10": { "cidr": "10.10.10.0/24", "switch": "sw1", "vlan": 10 }
+              }
+            }"#,
+        )
+        .unwrap();
+        let spec = compile(&topo).unwrap();
+        assert_eq!(spec.machines["r"].networks["sw1.vlan10"], 11);
+        // On a plain LAN it is still the gateway.
+        assert_eq!(spec.networks["office"].gateway.as_deref(), Some("r"));
+        assert_eq!(spec.machines["r"].networks["office"], 1);
+        let reparsed = isoloom_core::parse(&to_yaml(&spec).unwrap()).unwrap();
+        let problems = isoloom_core::validate(&reparsed);
+        assert!(problems.is_empty(), "{problems:?}");
     }
 
     #[test]
