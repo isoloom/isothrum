@@ -3,6 +3,7 @@
 //! `window.__TAURI__` and shows Run, Stop and Capture only here.
 
 mod console;
+mod lab_files;
 mod runner;
 mod terminal;
 mod tools;
