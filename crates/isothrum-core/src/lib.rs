@@ -166,6 +166,10 @@ pub enum CompileError {
         lan: String,
         cidr: String,
     },
+    /// A switch has the name of a LAN: its VLANs nest under a LAN of that name in the spec.
+    SwitchNameTaken {
+        switch: String,
+    },
     Spec(String),
 }
 
@@ -216,6 +220,12 @@ impl std::fmt::Display for CompileError {
                     "LAN `{lan}` ({cidr}) has no free address left; use a larger block"
                 )
             }
+            CompileError::SwitchNameTaken { switch } => {
+                write!(
+                    f,
+                    "switch `{switch}` has the name of a LAN; rename one of them"
+                )
+            }
             CompileError::Spec(e) => write!(f, "{e}"),
         }
     }
@@ -264,6 +274,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
     if topo.links.len() > MAX_LINKS {
         return Err(CompileError::TooManyLinks(topo.links.len()));
     }
+    check_switch_names(topo)?;
 
     let mut machines: IndexMap<String, Machine> = IndexMap::new();
     // Automatic routers aren't machines: only the networks they join count.
@@ -504,6 +515,25 @@ fn is_cisco_router(kind: &Kind) -> bool {
             ..
         }
     )
+}
+
+/// Refuses a switch named like a plain LAN: its VLANs nest under a LAN of the switch's name.
+fn check_switch_names(topo: &Topology) -> Result<(), CompileError> {
+    let plain = |name: &String| {
+        topo.networks
+            .get(name)
+            .is_some_and(|l| vlan_ref(l).is_none())
+    };
+    match topo
+        .networks
+        .values()
+        .find_map(|l| l.switch.as_ref().filter(|s| plain(s)))
+    {
+        Some(switch) => Err(CompileError::SwitchNameTaken {
+            switch: switch.clone(),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Where a Dynamips router's IOS image goes in the project (the user's to add).
@@ -887,6 +917,27 @@ mod tests {
         let reparsed = isoloom_core::parse(&to_yaml(&spec).unwrap()).unwrap();
         let problems = isoloom_core::validate(&reparsed);
         assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    /// A switch's VLANs nest under a LAN named after the switch: a LAN of the lab can't have
+    /// that name too, in either order.
+    #[test]
+    fn a_switch_can_not_share_a_lans_name() {
+        let mut topo = two_lans();
+        let vlan = Lan {
+            switch: Some("office".into()),
+            vlan: Some(10),
+            ..lan("10.10.10.0/24")
+        };
+        topo.networks.insert("vlan10".into(), vlan.clone());
+        topo.nodes["server"].networks.insert("vlan10".into(), None);
+        let clash = Err(CompileError::SwitchNameTaken {
+            switch: "office".into(),
+        });
+        assert_eq!(compile(&topo), clash);
+        topo.networks.shift_remove("vlan10");
+        topo.networks.shift_insert(0, "vlan10".into(), vlan);
+        assert_eq!(compile(&topo), clash);
     }
 
     #[test]
