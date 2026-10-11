@@ -132,27 +132,54 @@ fn addresses(spec: &Spec, m: &Machine) -> Vec<String> {
         .collect()
 }
 
+impl Package {
+    fn name(&self, dnf: bool) -> &'static str {
+        if dnf { self.dnf } else { self.apt }
+    }
+
+    fn unit(&self, dnf: bool) -> &'static str {
+        if dnf { self.unit_dnf } else { self.unit_apt }
+    }
+}
+
 fn shell(spec: &Spec, name: &str, m: &Machine, os: &str) -> String {
     let dnf = uses_dnf(os);
     let ports: Vec<u16> = m.services.iter().map(|s| s.port).collect();
-    let mut wanted: Vec<&Package> = Vec::new();
-    for p in PACKAGES.iter().filter(|p| ports.contains(&p.port)) {
-        let pkg = if dnf { p.dnf } else { p.apt };
-        if !wanted
-            .iter()
-            .any(|w| (if dnf { w.dnf } else { w.apt }) == pkg)
-        {
-            wanted.push(p);
-        }
+    let wanted = wanted(&ports, dnf);
+    let mut s = shell_header(spec, name, m, os, &ports);
+    if wanted.is_empty() {
+        s.push_str("# Nothing to install for this machine's ports yet: add your own steps here.\n");
+    } else {
+        s.push_str(&install(&wanted, dnf));
     }
     let unknown: Vec<String> = ports
         .iter()
         .filter(|port| !PACKAGES.iter().any(|p| p.port == **port))
         .map(|p| p.to_string())
         .collect();
+    if !unknown.is_empty() {
+        s.push_str(&format!(
+            "\n# TODO: install what answers on port(s) {}.\n",
+            unknown.join(", ")
+        ));
+    }
+    s
+}
 
-    let mut s = String::new();
-    s.push_str("#!/usr/bin/env bash\n");
+/// The packages answering on `ports`, each package once.
+fn wanted(ports: &[u16], dnf: bool) -> Vec<&'static Package> {
+    let mut wanted: Vec<&Package> = Vec::new();
+    for p in PACKAGES.iter().filter(|p| ports.contains(&p.port)) {
+        if !wanted.iter().any(|w| w.name(dnf) == p.name(dnf)) {
+            wanted.push(p);
+        }
+    }
+    wanted
+}
+
+/// The script's first lines: what it is, the machine's addresses and expected services.
+fn shell_header(spec: &Spec, name: &str, m: &Machine, os: &str, ports: &[u16]) -> String {
+    let mut s = String::from("#!/usr/bin/env bash\n");
     s.push_str(&format!("# Starter provisioning for `{name}` ({os}), written by Isothrum: edit it to build your lab.\n"));
     for a in addresses(spec, m) {
         s.push_str(&format!("# Address: {a}\n"));
@@ -165,42 +192,31 @@ fn shell(spec: &Spec, name: &str, m: &Machine, os: &str) -> String {
         ));
     }
     s.push_str("set -euo pipefail\n\n");
-    if wanted.is_empty() {
-        s.push_str("# Nothing to install for this machine's ports yet: add your own steps here.\n");
+    s
+}
+
+/// Installs, configures, enables and restarts the packages.
+fn install(wanted: &[&Package], dnf: bool) -> String {
+    let pkgs: Vec<&str> = wanted.iter().map(|p| p.name(dnf)).collect();
+    let mut s = if dnf {
+        format!("dnf install -y {}\n", pkgs.join(" "))
     } else {
-        let pkgs: Vec<&str> = wanted
-            .iter()
-            .map(|p| if dnf { p.dnf } else { p.apt })
-            .collect();
-        if dnf {
-            s.push_str(&format!("dnf install -y {}\n", pkgs.join(" ")));
-        } else {
-            s.push_str("export DEBIAN_FRONTEND=noninteractive\n");
-            s.push_str("apt-get update\n");
-            s.push_str(&format!("apt-get install -y {}\n", pkgs.join(" ")));
-        }
-        for p in &wanted {
-            if !p.configure.is_empty() {
-                s.push_str(&format!(
-                    "\n# Port {}: listen on the lab's networks, not only on localhost.\n",
-                    p.port
-                ));
-                s.push_str(p.configure);
-                s.push('\n');
-            }
-        }
-        s.push('\n');
-        for p in &wanted {
-            let unit = if dnf { p.unit_dnf } else { p.unit_apt };
-            s.push_str(&format!(
-                "systemctl enable {unit}\nsystemctl restart {unit}\n"
-            ));
-        }
-    }
-    if !unknown.is_empty() {
+        format!(
+            "export DEBIAN_FRONTEND=noninteractive\napt-get update\napt-get install -y {}\n",
+            pkgs.join(" ")
+        )
+    };
+    for p in wanted.iter().filter(|p| !p.configure.is_empty()) {
         s.push_str(&format!(
-            "\n# TODO: install what answers on port(s) {}.\n",
-            unknown.join(", ")
+            "\n# Port {}: listen on the lab's networks, not only on localhost.\n{}\n",
+            p.port, p.configure
+        ));
+    }
+    s.push('\n');
+    for p in wanted {
+        let unit = p.unit(dnf);
+        s.push_str(&format!(
+            "systemctl enable {unit}\nsystemctl restart {unit}\n"
         ));
     }
     s
