@@ -321,28 +321,31 @@ pub fn run() {
             update_check,
             update_install
         ])
-        .setup(|app| {
-            let page = match std::env::var("ISOTHRUM_URL") {
-                Ok(url) => {
-                    WebviewUrl::External(url.parse().map_err(|e| format!("ISOTHRUM_URL: {e}"))?)
-                }
-                Err(_) => WebviewUrl::App("index.html".into()),
-            };
-            WebviewWindowBuilder::new(app, "main", page)
-                .title("Isothrum")
-                .inner_size(1440.0, 900.0)
-                .min_inner_size(900.0, 600.0)
-                .build()?;
-            Ok(())
-        })
+        .setup(|app| open_main_window(app))
         .build(tauri::generate_context!())
         .expect("Isothrum desktop failed to start")
-        .run(|app, event| {
-            // Leaving the app ends every capture it started.
-            if let tauri::RunEvent::Exit = event
-                && let Some(c) = app.try_state::<Captures>()
-            {
-                c.stop_all();
-            }
-        });
+        .run(on_event);
+}
+
+/// The window: the bundled editor, or the site `ISOTHRUM_URL` names.
+fn open_main_window(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let page = match std::env::var("ISOTHRUM_URL") {
+        Ok(url) => WebviewUrl::External(url.parse().map_err(|e| format!("ISOTHRUM_URL: {e}"))?),
+        Err(_) => WebviewUrl::App("index.html".into()),
+    };
+    WebviewWindowBuilder::new(app, "main", page)
+        .title("Isothrum")
+        .inner_size(1440.0, 900.0)
+        .min_inner_size(900.0, 600.0)
+        .build()?;
+    Ok(())
+}
+
+/// Leaving the app ends every capture it started.
+fn on_event(app: &AppHandle, event: tauri::RunEvent) {
+    if let tauri::RunEvent::Exit = event
+        && let Some(c) = app.try_state::<Captures>()
+    {
+        c.stop_all();
+    }
 }

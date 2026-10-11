@@ -36,6 +36,9 @@ commands: see `src-tauri/capabilities/editor.json`.
 Docker, usable by your account (Linux: `sudo usermod -aG docker $USER`, then log in again).
 For labs with VMs, Vagrant with VirtualBox or libvirt (`vagrant-libvirt`).
 Wireshark, to watch captures live.
+The app finds them on the PATH, and also in their usual folders when the PATH doesn't say: on
+macOS `/usr/local/bin`, `/opt/homebrew/bin` and Docker's and Wireshark's app bundles (an app
+started from Finder gets a minimal PATH), on Windows `Program Files\Wireshark`.
 
 ## Develop
 
@@ -45,7 +48,7 @@ npm run editor                                       # the bundled editor, from 
                                                      # (or ISOTHRUM_WEBSITE=/path/to/isothrum-website)
 npm run dev                                          # the app on the bundled editor
 ISOTHRUM_URL=http://localhost:3000/en npm run dev    # against a local build of the website
-cd src-tauri && cargo test                           # the runner
+cd src-tauri && cargo test                           # the app's tests
 cd src-tauri && sg docker -c "cargo test -- --ignored"   # its tests that need Docker (and Vagrant)
 npm run build                                        # .deb / AppImage / .dmg / .msi
 ```
