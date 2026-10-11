@@ -13,10 +13,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - name: WebAssembly build
         run: |
@@ -35,11 +36,52 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
       # The bundled editor comes from the website at release; a placeholder page builds here.
       - run: mkdir -p ../editor && echo '<!doctype html><title>Isothrum</title>' > ../editor/index.html
       - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # The tests that run real labs (Docker is on the runner).
+      - run: cargo test -- --ignored one_machine_stops_starts_and_has_a_console a_snapshot_brings_a_machine_back_as_it_was
+
+  desktop-platforms:
+    name: Desktop app (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/desktop/src-tauri
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: mkdir -p ../editor && echo '<!doctype html><title>Isothrum</title>' > ../editor/index.html
+      - run: cargo test
+
+  msrv:
+    name: MSRV (Rust 1.88)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries (WebKitGTK)
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/desktop/src-tauri
+      - run: cargo check --all-targets
+      - run: mkdir -p apps/desktop/editor && echo '<!doctype html><title>Isothrum</title>' > apps/desktop/editor/index.html
+      - run: cargo check --all-targets
+        working-directory: apps/desktop/src-tauri

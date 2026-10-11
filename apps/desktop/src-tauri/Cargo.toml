@@ -2,7 +2,7 @@
 name = "isothrum-desktop"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 publish = false
 
 # Its own workspace: GTK/WebKit are needed here only.

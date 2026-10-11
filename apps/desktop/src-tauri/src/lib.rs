@@ -364,13 +364,12 @@ pub fn run() {
         .expect("Isothrum desktop failed to start")
         .run(|app, event| {
             // Leaving the app ends every capture it started.
-            if let tauri::RunEvent::Exit = event {
-                if let Some(c) = app.try_state::<Captures>() {
-                    if let Ok(mut all) = c.0.lock() {
-                        for (_, mut cap) in all.drain() {
-                            cap.stop();
-                        }
-                    }
+            if let tauri::RunEvent::Exit = event
+                && let Some(c) = app.try_state::<Captures>()
+                && let Ok(mut all) = c.0.lock()
+            {
+                for (_, mut cap) in all.drain() {
+                    cap.stop();
                 }
             }
         });

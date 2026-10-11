@@ -879,11 +879,10 @@ machines:
         let spec = prepare(&dir, yaml, &[]).unwrap();
         up(&dir).unwrap();
         let running = |m: &str| {
-            run(compose(&dir, &["ps", "-q", m]), "ps")
+            !run(compose(&dir, &["ps", "-q", m]), "ps")
                 .unwrap()
                 .trim()
-                .len()
-                > 0
+                .is_empty()
         };
         let cmd = console_command(&dir, &spec, "pc").unwrap();
         assert!(
