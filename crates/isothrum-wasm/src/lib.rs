@@ -154,18 +154,24 @@ fn bundle_filtered(topology_json: &str, target_dir: Option<&str>) -> Result<Vec<
     if !plan.problems.is_empty() {
         return Err(format!("fix the spec first: {}", plan.problems.join("; ")));
     }
-
-    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    let mut add = |path: &str, contents: &str| -> Result<(), String> {
-        zip.start_file(path, options).map_err(|e| e.to_string())?;
-        zip.write_all(contents.as_bytes())
-            .map_err(|e| e.to_string())
+    let files = target_files(plan.files, target_dir)?;
+    // The lab's own files, next to isoloom.yml where its paths point; a one-target download only
+    // gets those its files use (no starter scripts for Docker).
+    let mut own = config_files(topology_json);
+    own.extend(starter_files(&yaml)?);
+    own.retain(|o| target_dir.is_none() || files.iter().any(|f| f.contents.contains(&o.path)));
+    let spec = File {
+        path: SPEC_PATH.into(),
+        contents: yaml,
     };
+    zip_of(std::iter::once(&spec).chain(&own).chain(&files))
+}
+
+/// The generated files of the target in `target_dir` (`docker`, `cloud-docker/aws`…), or all.
+fn target_files(files: Vec<File>, target_dir: Option<&str>) -> Result<Vec<File>, String> {
     let prefix = target_dir.map(|d| format!(".isoloom/{}/", d.trim_matches('/')));
-    let files: Vec<&File> = plan
-        .files
-        .iter()
+    let files: Vec<File> = files
+        .into_iter()
         .filter(|f| prefix.as_ref().is_none_or(|p| f.path.starts_with(p)))
         .collect();
     if files.is_empty() {
@@ -174,25 +180,40 @@ fn bundle_filtered(topology_json: &str, target_dir: Option<&str>) -> Result<Vec<
             target_dir.unwrap_or("any target")
         ));
     }
-    add(SPEC_PATH, &yaml)?;
-    // Starter scripts for the VMs' provisioning steps, next to isoloom.yml where its paths point;
-    // a one-target download only gets those its files use (none for Docker).
-    let spec = isoloom_core::parse(&yaml).map_err(|e| e.to_string())?;
-    // Appliances' own configurations (IOS commands), where isoloom.yml points.
-    if let Ok(topo) = serde_json::from_str::<isothrum_core::Topology>(topology_json) {
-        for (path, contents) in isothrum_core::config_files(&topo) {
-            if target_dir.is_none() || files.iter().any(|f| f.contents.contains(&path)) {
-                add(&path, &contents)?;
-            }
-        }
-    }
-    for s in isothrum_core::starters::starters(&spec) {
-        if target_dir.is_none() || files.iter().any(|f| f.contents.contains(&s.path)) {
-            add(&s.path, &s.contents)?;
-        }
-    }
+    Ok(files)
+}
+
+/// The appliances' own configurations (IOS commands), where isoloom.yml points.
+fn config_files(topology_json: &str) -> Vec<File> {
+    serde_json::from_str::<isothrum_core::Topology>(topology_json)
+        .map(|topo| isothrum_core::config_files(&topo))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(path, contents)| File { path, contents })
+        .collect()
+}
+
+/// Starter scripts for the VMs' provisioning steps, where isoloom.yml points.
+fn starter_files(yaml: &str) -> Result<Vec<File>, String> {
+    let spec = isoloom_core::parse(yaml).map_err(|e| e.to_string())?;
+    Ok(isothrum_core::starters::starters(&spec)
+        .into_iter()
+        .map(|s| File {
+            path: s.path,
+            contents: s.contents,
+        })
+        .collect())
+}
+
+/// A zip of `files`, deflated, in order.
+fn zip_of<'a>(files: impl Iterator<Item = &'a File>) -> Result<Vec<u8>, String> {
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for f in files {
-        add(&f.path, &f.contents)?;
+        zip.start_file(f.path.as_str(), options)
+            .map_err(|e| e.to_string())?;
+        zip.write_all(f.contents.as_bytes())
+            .map_err(|e| e.to_string())?;
     }
     let cursor = zip.finish().map_err(|e| e.to_string())?;
     Ok(cursor.into_inner())
@@ -211,20 +232,8 @@ pub fn own_files(topology_json: &str) -> Vec<File> {
     let Some(yaml) = plan(topology_json).isoloom_yml else {
         return vec![];
     };
-    let mut out = vec![];
-    if let Ok(topo) = serde_json::from_str::<isothrum_core::Topology>(topology_json) {
-        for (path, contents) in isothrum_core::config_files(&topo) {
-            out.push(File { path, contents });
-        }
-    }
-    if let Ok(spec) = isoloom_core::parse(&yaml) {
-        for s in isothrum_core::starters::starters(&spec) {
-            out.push(File {
-                path: s.path,
-                contents: s.contents,
-            });
-        }
-    }
+    let mut out = config_files(topology_json);
+    out.extend(starter_files(&yaml).unwrap_or_default());
     out
 }
 
