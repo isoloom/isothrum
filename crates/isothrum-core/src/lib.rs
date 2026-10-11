@@ -62,6 +62,7 @@ fn spec(topo: &Topology, draft: Draft) -> Spec {
         message: None,
         tools: IndexMap::new(),
         clones: IndexMap::new(),
+        cloud: None,
     }
 }
 
