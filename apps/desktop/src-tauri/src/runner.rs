@@ -12,6 +12,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+use crate::console::Console;
+use crate::tools::has;
+
 use isoloom_core::{Spec, Target};
 
 /// The image the capture runs in: tcpdump, ip and a shell, nothing to install.
@@ -220,9 +223,12 @@ pub fn container(dir: &Path, machine: &str) -> Result<String, RunError> {
     Ok(id)
 }
 
+/// A container's shell: bash when it has it, else sh.
+pub const SHELL: &str = "command -v bash >/dev/null && exec bash || exec sh";
+
 /// The command a console on `machine` runs: a shell in its container, or SSH to a network
 /// appliance's OS (its management address; `admin`/`admin`).
-pub fn console_command(dir: &Path, spec: &Spec, machine: &str) -> Result<String, RunError> {
+pub fn console_command(dir: &Path, spec: &Spec, machine: &str) -> Result<Console, RunError> {
     let m = spec
         .machines
         .get(machine)
@@ -252,72 +258,19 @@ pub fn console_command(dir: &Path, spec: &Spec, machine: &str) -> Result<String,
                 what: format!("`{machine}`"),
                 output: "has no management address".into(),
             })?;
-        return Ok(format!(
-            "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null admin@{ip}"
-        ));
+        let no_file = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        return Ok(Console::new(&[
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            &format!("UserKnownHostsFile={no_file}"),
+            &format!("admin@{ip}"),
+        ]));
     }
-    Ok(format!(
-        "docker exec -it {id} sh -c 'command -v bash >/dev/null && exec bash || exec sh'"
-    ))
-}
-
-/// Opens the system's terminal running `command` (titled `title`), as GNS3's consoles do.
-pub fn open_terminal(title: &str, command: &str) -> Result<(), RunError> {
-    #[cfg(target_os = "macos")]
-    let mut c = {
-        let script = format!(
-            "tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell",
-            command.replace('\\', "\\\\").replace('"', "\\\"")
-        );
-        let mut c = Command::new("osascript");
-        c.args(["-e", &script]);
-        c
-    };
-    #[cfg(target_os = "windows")]
-    let mut c = {
-        let mut c = Command::new("cmd");
-        c.args(["/C", "start", title, "cmd", "/K", command]);
-        c
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let mut c = {
-        // `$TERMINAL` when the user set one (it takes `-e`), else the usual desktops' terminals,
-        // the generic alternative last but one (it may point anywhere).
-        let preferred = std::env::var("TERMINAL").ok().filter(|t| has(t));
-        let terminals: [(&str, &[&str]); 6] = [
-            ("gnome-terminal", &["--title", title, "--"]),
-            ("konsole", &["-p", "tabtitle", "-e"]),
-            ("xfce4-terminal", &["-T", title, "-x"]),
-            ("alacritty", &["-t", title, "-e"]),
-            ("x-terminal-emulator", &["-T", title, "-e"]),
-            ("xterm", &["-T", title, "-e"]),
-        ];
-        let mut c = match preferred {
-            Some(t) => {
-                let mut c = Command::new(t);
-                c.arg("-e");
-                c
-            }
-            None => {
-                let (program, args) = terminals.iter().find(|(p, _)| has(p)).ok_or_else(|| {
-                    RunError::Io("no terminal found (install xterm, GNOME Terminal or Konsole, or set $TERMINAL)".into())
-                })?;
-                let mut c = Command::new(program);
-                c.args(*args);
-                c
-            }
-        };
-        c.args(["sh", "-c", command]);
-        c
-    };
-    #[cfg(not(target_os = "windows"))]
-    let _ = title;
-    c.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    c.spawn()
-        .map(|_| ())
-        .map_err(|e| RunError::Io(format!("couldn't open a terminal: {e}")))
+    Ok(Console::new(&[
+        "docker", "exec", "-it", &id, "sh", "-c", SHELL,
+    ]))
 }
 
 /// Starts, stops or restarts one machine (and its network sidecar, which sets its routes).
@@ -677,13 +630,6 @@ impl Capture {
     }
 }
 
-/// Whether a program is on the PATH.
-pub fn has(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
-        .unwrap_or(false)
-}
-
 /// Whether Wireshark can show a capture live: it hands even a piped capture to `dumpcap`, which
 /// Linux distributions restrict to the `wireshark` group. Without it, Wireshark opens only to
 /// fail with "Couldn't run dumpcap in child process: Permission denied".
@@ -885,10 +831,8 @@ machines:
                 .is_empty()
         };
         let cmd = console_command(&dir, &spec, "pc").unwrap();
-        assert!(
-            cmd.starts_with("docker exec -it ") && cmd.contains("exec bash || exec sh"),
-            "{cmd}"
-        );
+        assert_eq!(cmd.argv[..3], ["docker", "exec", "-it"]);
+        assert_eq!(cmd.argv.last().map(String::as_str), Some(SHELL));
         machine_action(&dir, &spec, "pc", "stop").unwrap();
         assert!(
             !running("pc") && !running("pc-routes"),

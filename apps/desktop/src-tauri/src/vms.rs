@@ -9,7 +9,8 @@ use std::process::Command;
 
 use isoloom_core::Spec;
 
-use crate::runner::{RunError, Runtime, run};
+use crate::console::Console;
+use crate::runner::{RunError, Runtime, SHELL, run};
 
 /// The hybrid output's Docker host VM, and where it keeps the containers' Compose file.
 pub const DOCKER_HOST: &str = "isoloom-docker";
@@ -109,18 +110,14 @@ pub fn states(machine_readable: &str) -> String {
 }
 
 /// A console: `vagrant ssh` to a VM, or a shell in a hybrid lab's container through its host.
-pub fn console_command(lab: &Path, spec: &Spec, runtime: Runtime, machine: &str) -> String {
-    let d = dir(lab, runtime)
-        .display()
-        .to_string()
-        .replace('\'', "'\\''");
-    if in_host(spec, runtime, machine) {
-        format!(
-            "cd '{d}' && vagrant ssh {DOCKER_HOST} -c \"sudo docker compose -f {HOST_COMPOSE} exec {machine} sh -c 'command -v bash >/dev/null && exec bash || exec sh'\""
-        )
+pub fn console_command(lab: &Path, spec: &Spec, runtime: Runtime, machine: &str) -> Console {
+    let console = if in_host(spec, runtime, machine) {
+        let shell = format!("sudo docker compose -f {HOST_COMPOSE} exec {machine} sh -c '{SHELL}'");
+        Console::new(&["vagrant", "ssh", DOCKER_HOST, "-c", &shell])
     } else {
-        format!("cd '{d}' && vagrant ssh {machine}")
-    }
+        Console::new(&["vagrant", "ssh", machine])
+    };
+    console.in_dir(&dir(lab, runtime))
 }
 
 /// Starts, stops or restarts one machine.
@@ -288,13 +285,14 @@ mod tests {
         .unwrap();
         assert!(in_host(&spec, Runtime::Hybrid, "web"));
         assert!(!in_host(&spec, Runtime::Hybrid, "pc"));
-        let c = console_command(Path::new("/lab"), &spec, Runtime::Hybrid, "web");
+        let c = console_command(Path::new("/lab"), &spec, Runtime::Hybrid, "web").sh_line();
         assert!(
             c.contains("vagrant ssh isoloom-docker -c") && c.contains("exec web"),
             "{c}"
         );
         assert!(
             console_command(Path::new("/lab"), &spec, Runtime::Hybrid, "pc")
+                .sh_line()
                 .ends_with("vagrant ssh pc")
         );
         let cap = capture_command(
