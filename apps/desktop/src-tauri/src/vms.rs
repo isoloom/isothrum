@@ -262,11 +262,13 @@ mod tests {
         );
     }
 
+    /// GNU `base64` (`-w0`): Linux only.
     #[test]
+    #[cfg(target_os = "linux")]
     fn base64_matches_the_systems() {
         for s in ["", "a", "ab", "abc", "echo 'a b' && awk '{print $2}'\n"] {
             let sys = Command::new("sh")
-                .args(["-c", &format!("printf %s \"$0\" | base64 -w0"), s])
+                .args(["-c", "printf %s \"$0\" | base64 -w0", s])
                 .output()
                 .unwrap()
                 .stdout;
