@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use crate::console::Console;
+use crate::lab_files;
 use crate::tools::has;
 
 use isoloom_core::{Spec, Target};
@@ -54,6 +55,17 @@ pub enum Runtime {
     Docker,
     Vagrant,
     Hybrid,
+}
+
+impl Runtime {
+    /// How the lab's folder records it.
+    fn name(self) -> &'static str {
+        match self {
+            Runtime::Docker => "docker",
+            Runtime::Vagrant => "vagrant",
+            Runtime::Hybrid => "hybrid",
+        }
+    }
 }
 
 /// Where the lab's folder records its runtime.
@@ -108,24 +120,13 @@ pub fn lab_dir(data: &Path, name: &str) -> PathBuf {
 /// `own`: the lab's own files (provisioning scripts, appliance configurations), at the paths
 /// isoloom.yml gives them (relative, inside the lab's folder).
 pub fn prepare(dir: &Path, yaml: &str, own: &[(String, String)]) -> Result<Spec, RunError> {
-    for (path, _) in own {
-        let p = Path::new(path);
-        if p.is_absolute()
-            || p.components()
-                .any(|c| !matches!(c, std::path::Component::Normal(_)))
-        {
-            return Err(RunError::Spec(format!(
-                "`{path}` isn't a path inside the lab"
-            )));
-        }
+    if let Some((path, _)) = own.iter().find(|(p, _)| !lab_files::inside_lab(p)) {
+        return Err(RunError::Spec(format!(
+            "`{path}` isn't a path inside the lab"
+        )));
     }
-    let spec = isoloom_core::parse(yaml).map_err(|e| RunError::Spec(e.to_string()))?;
-    let problems = isoloom_core::validate(&spec);
-    if !problems.is_empty() {
-        let list: Vec<String> = problems.iter().map(|p| p.to_string()).collect();
-        return Err(RunError::Spec(list.join("\n")));
-    }
-    let (runtime, files) = generated(&spec)?;
+    let spec = valid_spec(yaml)?;
+    let (runtime, generated) = generated(&spec)?;
     if runtime != Runtime::Docker && !has("vagrant") {
         return Err(RunError::NotDocker(
             "This lab has VMs: they run with Vagrant (and VirtualBox or libvirt), which isn't \
@@ -133,27 +134,26 @@ pub fn prepare(dir: &Path, yaml: &str, own: &[(String, String)]) -> Result<Spec,
                 .into(),
         ));
     }
-    std::fs::create_dir_all(dir).map_err(|e| RunError::Io(e.to_string()))?;
-    std::fs::write(dir.join("isoloom.yml"), yaml).map_err(|e| RunError::Io(e.to_string()))?;
-    let name = match runtime {
-        Runtime::Docker => "docker",
-        Runtime::Vagrant => "vagrant",
-        Runtime::Hybrid => "hybrid",
-    };
-    std::fs::write(dir.join(RUNTIME), name).map_err(|e| RunError::Io(e.to_string()))?;
-    let own = own.iter().map(|(p, c)| (p.as_str(), c.as_str()));
-    for (path, contents) in files
+    lab_files::write(dir, "isoloom.yml", yaml)?;
+    lab_files::write(dir, RUNTIME, runtime.name())?;
+    let files: Vec<(&str, &str)> = generated
         .iter()
         .map(|f| (f.path.as_str(), f.contents.as_str()))
-        .chain(own)
-    {
-        let path = dir.join(path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| RunError::Io(e.to_string()))?;
-        }
-        std::fs::write(&path, contents).map_err(|e| RunError::Io(e.to_string()))?;
-    }
+        .chain(own.iter().map(|(p, c)| (p.as_str(), c.as_str())))
+        .collect();
+    lab_files::write_all(dir, &files)?;
     Ok(spec)
+}
+
+/// The spec in `yaml`, when Isoloom finds no problem in it.
+fn valid_spec(yaml: &str) -> Result<Spec, RunError> {
+    let spec = isoloom_core::parse(yaml).map_err(|e| RunError::Spec(e.to_string()))?;
+    let problems = isoloom_core::validate(&spec);
+    if problems.is_empty() {
+        return Ok(spec);
+    }
+    let list: Vec<String> = problems.iter().map(|p| p.to_string()).collect();
+    Err(RunError::Spec(list.join("\n")))
 }
 
 /// `docker compose` on the lab's file, from its folder.
@@ -194,7 +194,10 @@ pub fn up(dir: &Path) -> Result<String, RunError> {
     if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
         return crate::vms::up(dir, rt);
     }
-    run(compose(dir, &["up", "-d", "--wait"]), "Starting the lab")
+    run(
+        compose(dir, &["up", "-d", "--wait", "--remove-orphans"]),
+        "Starting the lab",
+    )
 }
 
 pub fn down(dir: &Path) -> Result<String, RunError> {
@@ -392,47 +395,65 @@ pub fn take_snapshot(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let rt = runtime(dir);
-    let image = if rt == Runtime::Docker {
-        let id = container(dir, machine)?;
-        let image = format!("isothrum-snapshots/{lab}-{machine}:{created}");
-        run(
-            {
-                let mut c = Command::new("docker");
-                c.args(["commit", "--message", label, &id, &image]);
-                c
-            },
-            "Saving the machine",
-        )?;
-        image
-    } else {
-        let spec = lab_spec(dir)?;
-        if crate::vms::in_host(&spec, rt, machine) {
-            return Err(RunError::Spec(
-                "snapshots of a container in a lab with VMs come later: snapshot its VMs".into(),
-            ));
-        }
-        // Vagrant's own snapshot (the provider's), named like the record.
-        let name = format!("{machine}-{created}");
-        crate::vms::snapshot_save(dir, rt, machine, &name)?;
-        format!("vagrant:{name}")
+    let mut list = snapshots(dir);
+    let stamp = unique_stamp(&list, machine, created);
+    let image = match runtime(dir) {
+        Runtime::Docker => commit_container(dir, lab, machine, label, &stamp)?,
+        rt => save_vm(dir, rt, machine, &stamp)?,
     };
     let snap = Snapshot {
-        id: format!("{machine}-{created}"),
+        id: format!("{machine}-{stamp}"),
         machine: machine.into(),
         image,
-        label: if label.trim().is_empty() {
-            "snapshot".into()
-        } else {
-            label.trim().into()
+        label: match label.trim() {
+            "" => "snapshot".into(),
+            l => l.into(),
         },
         created,
         in_use: false,
     };
-    let mut list = snapshots(dir);
     list.push(snap.clone());
     save_snapshots(dir, &list)?;
     Ok(snap)
+}
+
+/// What tells a machine's snapshot apart: the second it was taken, plus `-2`, `-3`… when the
+/// machine already has one from that second.
+fn unique_stamp(list: &[Snapshot], machine: &str, created: u64) -> String {
+    let taken = |stamp: &str| list.iter().any(|s| s.id == format!("{machine}-{stamp}"));
+    std::iter::once(created.to_string())
+        .chain((2..).map(|n| format!("{created}-{n}")))
+        .find(|stamp| !taken(stamp))
+        .expect("an unused stamp")
+}
+
+/// Saves a machine's container as an image; returns the image.
+fn commit_container(
+    dir: &Path,
+    lab: &str,
+    machine: &str,
+    label: &str,
+    stamp: &str,
+) -> Result<String, RunError> {
+    let id = container(dir, machine)?;
+    let image = format!("isothrum-snapshots/{lab}-{machine}:{stamp}");
+    let mut c = Command::new("docker");
+    c.args(["commit", "--message", label, &id, &image]);
+    run(c, "Saving the machine")?;
+    Ok(image)
+}
+
+/// Saves a VM with Vagrant's own snapshot (the provider's), named like the record.
+fn save_vm(dir: &Path, rt: Runtime, machine: &str, stamp: &str) -> Result<String, RunError> {
+    let spec = lab_spec(dir)?;
+    if crate::vms::in_host(&spec, rt, machine) {
+        return Err(RunError::Spec(
+            "snapshots of a container in a lab with VMs come later: snapshot its VMs".into(),
+        ));
+    }
+    let name = format!("{machine}-{stamp}");
+    crate::vms::snapshot_save(dir, rt, machine, &name)?;
+    Ok(format!("vagrant:{name}"))
 }
 
 /// Runs the machine from a snapshot (or, with `None`, from its own image again), recreating it
@@ -584,8 +605,9 @@ pub fn plan_capture(dir: &Path, spec: &Spec, network: &str) -> Result<CapturePla
     })
 }
 
-/// The capture process: tcpdump in the machine's network namespace, pcap on stdout.
-pub fn capture_command(plan: &CapturePlan) -> Command {
+/// The capture process: tcpdump in the machine's network namespace, pcap on stdout. On Docker,
+/// its container is called `name`, so that stopping the capture can remove it.
+pub fn capture_command(plan: &CapturePlan, name: &str) -> Command {
     if let Some((dir, rt, machine, in_host)) = &plan.vm {
         return crate::vms::capture_command(
             dir,
@@ -600,6 +622,8 @@ pub fn capture_command(plan: &CapturePlan) -> Command {
         "run",
         "--rm",
         "-i",
+        "--name",
+        name,
         "--net",
         &format!("container:{}", plan.container),
         "--cap-add",
@@ -619,15 +643,38 @@ pub struct Capture {
     pub children: Vec<Child>,
     /// Where the packets go when Wireshark isn't there.
     pub file: Option<PathBuf>,
+    /// The capture's container (Docker labs): killing its `docker run` client may leave it.
+    pub container: Option<String>,
 }
 
 impl Capture {
     pub fn stop(&mut self) {
         for c in &mut self.children {
-            let _ = c.kill();
-            let _ = c.wait();
+            stop_child(c);
+        }
+        if let Some(name) = &self.container {
+            let _ = remove_container(name).output();
         }
     }
+}
+
+fn stop_child(c: &mut Child) {
+    let _ = c.kill();
+    let _ = c.wait();
+}
+
+/// `docker rm -f <name>`.
+fn remove_container(name: &str) -> Command {
+    let mut c = Command::new("docker");
+    c.args(["rm", "-f", name]);
+    c
+}
+
+/// A name no other capture has: `isothrum-capture-<pid>-<n>`.
+fn capture_name() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("isothrum-capture-{}-{n}", std::process::id())
 }
 
 /// Whether Wireshark can show a capture live: it hands even a piped capture to `dumpcap`, which
@@ -646,40 +693,58 @@ pub fn live_capture_possible() -> bool {
 
 /// Starts a capture: live into Wireshark when it can show it, otherwise into `file`.
 pub fn start_capture(plan: &CapturePlan, file: &Path) -> Result<Capture, RunError> {
-    let mut dump = capture_command(plan);
-    if live_capture_possible() {
-        let mut dump = dump
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| RunError::Io(e.to_string()))?;
-        let stdout = dump
-            .stdout
-            .take()
-            .ok_or_else(|| RunError::Io("no capture output".into()))?;
-        let wireshark = Command::new("wireshark")
-            .args(["-k", "-i", "-"])
-            .stdin(Stdio::from(stdout))
-            .spawn()
-            .map_err(|e| RunError::Io(e.to_string()))?;
-        return Ok(Capture {
-            children: vec![dump, wireshark],
-            file: None,
+    let name = capture_name();
+    let dump = capture_command(plan, &name);
+    let container = plan.vm.is_none().then_some(name);
+    let (children, file) = if live_capture_possible() {
+        (into_wireshark(dump)?, None)
+    } else {
+        (vec![into_file(dump, file)?], Some(file.to_path_buf()))
+    };
+    Ok(Capture {
+        children,
+        file,
+        container,
+    })
+}
+
+/// Runs the capture into Wireshark; stops the capture when Wireshark doesn't start.
+fn into_wireshark(mut dump: Command) -> Result<Vec<Child>, RunError> {
+    let mut dump = dump
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| RunError::Io(e.to_string()))?;
+    let wireshark = dump
+        .stdout
+        .take()
+        .ok_or_else(|| RunError::Io("no capture output".into()))
+        .and_then(|out| {
+            Command::new("wireshark")
+                .args(["-k", "-i", "-"])
+                .stdin(Stdio::from(out))
+                .spawn()
+                .map_err(|e| RunError::Io(format!("couldn't start Wireshark: {e}")))
         });
+    match wireshark {
+        Ok(w) => Ok(vec![dump, w]),
+        Err(e) => {
+            stop_child(&mut dump);
+            Err(e)
+        }
     }
+}
+
+/// Runs the capture into a `.pcap` file.
+fn into_file(mut dump: Command, file: &Path) -> Result<Child, RunError> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| RunError::Io(e.to_string()))?;
     }
     let out = std::fs::File::create(file).map_err(|e| RunError::Io(e.to_string()))?;
-    let dump = dump
-        .stdout(out)
+    dump.stdout(out)
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| RunError::Io(e.to_string()))?;
-    Ok(Capture {
-        children: vec![dump],
-        file: Some(file.to_path_buf()),
-    })
+        .map_err(|e| RunError::Io(e.to_string()))
 }
 
 #[cfg(test)]
@@ -807,13 +872,44 @@ machines:
             prefix: "10.10.1.".into(),
             vm: None,
         };
-        let cmd = capture_command(&plan);
+        let cmd = capture_command(&plan, "isothrum-capture-1-0");
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert!(args.windows(2).any(|w| w == ["--net", "container:abc123"]));
         assert!(args.contains(&CAPTURE_IMAGE.to_string()));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--name", "isothrum-capture-1-0"])
+        );
+    }
+
+    #[test]
+    fn captures_have_their_own_names() {
+        assert_ne!(capture_name(), capture_name());
+        let rm = remove_container("isothrum-capture-1-0");
+        let args: Vec<&std::ffi::OsStr> = rm.get_args().collect();
+        assert_eq!(args, ["rm", "-f", "isothrum-capture-1-0"]);
+    }
+
+    #[test]
+    fn two_snapshots_in_one_second_get_their_own_ids() {
+        let snap = |id: &str| Snapshot {
+            id: id.into(),
+            machine: "pc".into(),
+            image: String::new(),
+            label: String::new(),
+            created: 100,
+            in_use: false,
+        };
+        assert_eq!(unique_stamp(&[], "pc", 100), "100");
+        assert_eq!(unique_stamp(&[snap("pc-100")], "pc", 100), "100-2");
+        assert_eq!(
+            unique_stamp(&[snap("pc-100"), snap("pc-100-2")], "pc", 100),
+            "100-3"
+        );
+        assert_eq!(unique_stamp(&[snap("pc-100")], "srv", 100), "100");
     }
 
     /// Needs Docker (run with `--ignored`): a machine's console and starting/stopping it alone.
