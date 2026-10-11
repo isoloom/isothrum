@@ -16,13 +16,13 @@ mechanism) · **Planned** (on the roadmap) · **Out** (not planned; reason given
 | QEMU / full VM nodes | Covered | `kind: vm`, Vagrant, Proxmox and cloud targets |
 | VirtualBox / VMware nodes | Partial | Through Vagrant providers, not as separate node types |
 | VPCS (simple PC) | Planned | A small container image with the same commands |
-| Ethernet switch | Partial | A cable network is a switch segment; no explicit switch node yet |
+| Ethernet switch | Covered | Switch nodes with VLANs and trunks (Isoloom's `vlans` under a LAN), or a Cisco IOL/IOSv L2 switch in the forwarding path (Isoloom's `switch`) |
 | Ethernet hub | Out | Hubs are switches with no MAC learning; nothing to model |
 | Cloud node (bridge to host) | Partial | Hybrid target uses macvlan on the VM host; no explicit cloud node |
 | NAT node | Partial | `internet` flag and gateway machines; no explicit NAT node |
-| Cisco IOS / Dynamips / IOU router images | Out | Proprietary images; use FRR or another container as the router |
+| Cisco IOS / Dynamips / IOU router images | Covered | IOL, IOSv, CSR 1000v, Catalyst 8000v (vrnetlab images) and Dynamips routers, each with its own configuration; the user brings the images |
 | Frame Relay and ATM switches | Out | Legacy WAN technologies |
-| Router as FRR container | Planned | Needs the routing decision (see below) |
+| Router as FRR container | Covered | Any container or VM as a router you configure, or the automatic router (`reach` rules between its networks) |
 
 ## Links
 
@@ -30,20 +30,20 @@ mechanism) · **Planned** (on the roadmap) · **Out** (not planned; reason given
 |---|---|---|
 | Point-to-point cabling between ports | Covered | Each cable is its own /29 network (`isothrum-core`) |
 | Named ports (interfaces) | Covered | Free-text port names on each endpoint |
-| Link filters: latency, jitter, loss, bandwidth | Planned | `tc netem` in a sidecar, generated per target |
-| Start / stop / suspend a link | Planned | Needs the per-node runner |
-| Packet capture on a link | Planned | Capture container on the link's network |
-| Routing between links | Open | Real routers (recommended) or Isoloom's `reach` rules |
+| Link filters: latency, jitter, loss, bandwidth | Covered | Isoloom's `tc` on a LAN or a cable (netem on its router) |
+| Start / stop / suspend a link | Planned | Not in the desktop app yet |
+| Packet capture on a link | Covered | Desktop app: `tcpdump` in a capture container (or a VM) on the LAN or cable, live into Wireshark or into a `.pcap` |
+| Routing between links | Covered | Routers you configure (Cisco, FRR…) or the automatic router's `reach` rules |
 
 ## Consoles and runtime
 
 | GNS3 feature | Status | Isothrum / Isoloom mapping |
 |---|---|---|
-| Telnet console to a node | Planned | `docker exec` or a web terminal |
+| Telnet console to a node | Covered | Desktop app: a terminal with a shell in the container, SSH to a Cisco appliance, or `vagrant ssh` to a VM |
 | VNC / SPICE console | Planned | Browser console for VM nodes |
-| Start / stop / suspend / reload a node | Planned | Per-node runner, beyond `isoloom run` / `down` |
+| Start / stop / suspend / reload a node | Covered | Desktop app: start, stop and restart one machine (no suspend) |
 | Auto-start on open | Planned | Runner setting |
-| Snapshots of a node | Planned | Docker commit for containers, VM snapshot for VMs |
+| Snapshots of a node | Covered | Desktop app: `docker commit` for containers, `vagrant snapshot` for VMs |
 
 ## Projects and editing
 
@@ -75,7 +75,9 @@ Isothrum/Isoloom features GNS3 does not have, which should lead the marketing:
 - `reach` rules that declare which networks may talk, verified by checks.
 - The spec is a plain text file that works in Git and CI.
 
-## Open decisions that block rows
+## Decisions taken
 
-1. **Routing** (blocks router, link filters on routed paths, capture): real routers or `reach` rules.
-2. **Runner** (blocks start/stop, consoles, snapshots, capture): the runner is the next big piece.
+1. **Routing**: both. Routers you configure (Cisco appliances, FRR or any container or VM), and
+   the automatic router, which writes Isoloom `reach` rules.
+2. **Runner**: the desktop app runs labs (Docker Compose, or Vagrant for VMs) and owns consoles,
+   start/stop, snapshots and capture.
