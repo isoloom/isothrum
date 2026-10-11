@@ -155,7 +155,7 @@ dependencies = [
 [[package]]
 name = "isoloom-core"
 version = "0.8.1"
-source = "git+https://github.com/isoloom/isoloom?rev=164b40091b570e72868bf6a53c89038899a37639#164b40091b570e72868bf6a53c89038899a37639"
+source = "git+https://github.com/isoloom/isoloom?rev=4c58e155e78b9f7c13c8618f3e0690f26cb62eb1#4c58e155e78b9f7c13c8618f3e0690f26cb62eb1"
 dependencies = [
  "hcl-rs",
  "indexmap",
@@ -172,6 +172,7 @@ dependencies = [
  "indexmap",
  "isoloom-core",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
 ]
 

@@ -52,6 +52,10 @@ pub struct Lan {
     pub switch: Option<String>,
     #[serde(default)]
     pub vlan: Option<u16>,
+    /// The switch's machine when it runs a Cisco OS (a node of its own, with no networks):
+    /// Isoloom's `switch` on the LAN its VLANs nest under.
+    #[serde(default)]
+    pub device: Option<String>,
     /// How the LAN behaves (a slow or lossy link): Isoloom's `tc`.
     #[serde(default)]
     pub tc: Option<Tc>,
@@ -290,6 +294,8 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
                     init: vec![],
                     idle: *idle && appliance.is_none(),
                     appliance: *appliance,
+                    dockerfile: None,
+                    args: IndexMap::new(),
                     config: config
                         .as_ref()
                         .filter(|c| !c.trim().is_empty())
@@ -328,6 +334,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
                 vlans: IndexMap::new(),
                 tc: lan.tc.clone(),
                 vlan: None,
+                switch: None,
             },
         );
 
@@ -413,6 +420,7 @@ pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
                 vlans: IndexMap::new(),
                 tc: link.tc.clone(),
                 vlan: None,
+                switch: None,
             },
         );
         for (end, octet) in [(&link.a.node, a_octet), (&link.b.node, b_octet)] {
@@ -571,7 +579,11 @@ fn nest_vlans(
             vlans: IndexMap::new(),
             tc: None,
             vlan: None,
+            switch: None,
         });
+        if lan.device.is_some() {
+            parent.switch = lan.device.clone();
+        }
         parent.vlans.insert(
             id,
             Vlan {
@@ -685,6 +697,7 @@ mod tests {
             internet: true,
             switch: None,
             vlan: None,
+            device: None,
             tc: None,
         }
     }
@@ -781,7 +794,7 @@ mod tests {
     #[test]
     fn nodes_keep_their_kind_and_access() {
         let spec = compile(&three_node()).unwrap();
-        assert_eq!(spec.machines["client"].access, true);
+        assert!(spec.machines["client"].access);
         assert_eq!(
             spec.machines["router"]
                 .docker
@@ -802,6 +815,45 @@ mod tests {
         let reparsed = isoloom_core::parse(&yaml).expect("the output parses as an Isoloom spec");
         let problems = isoloom_core::validate(&reparsed);
         assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    /// A switch running a Cisco OS, as the editor sends it: a node of its own with no networks,
+    /// named as the `device` of its VLANs; machines on its ports join the VLANs.
+    #[test]
+    fn a_cisco_switch_switches_its_vlans() {
+        let topo: Topology = serde_json::from_str(
+            r#"{
+              "name": "cisco-sw",
+              "nodes": {
+                "pc1": { "kind": { "container": { "image": "alpine:3.20", "idle": true } }, "access": false, "services": [], "networks": { "vlan10": null } },
+                "pc2": { "kind": { "container": { "image": "alpine:3.20", "idle": true } }, "access": false, "services": [], "networks": { "vlan20": null } },
+                "sw1": { "kind": { "container": { "image": "vrnetlab/cisco_iol:L2-17.12.01", "appliance": "cisco-iol-l2", "config": "spanning-tree mode rapid-pvst" } }, "access": false, "services": [], "networks": {} }
+              },
+              "networks": {
+                "vlan10": { "cidr": "10.10.10.0/24", "internet": true, "switch": "sw1", "vlan": 10, "device": "sw1" },
+                "vlan20": { "cidr": "10.10.20.0/24", "internet": true, "switch": "sw1", "vlan": 20, "device": "sw1" }
+              },
+              "links": []
+            }"#,
+        )
+        .unwrap();
+        let spec = compile(&topo).unwrap();
+        assert_eq!(spec.networks["sw1"].switch.as_deref(), Some("sw1"));
+        assert!(spec.machines["sw1"].networks.is_empty());
+        assert_eq!(
+            spec.machines["pc1"].networks.keys().collect::<Vec<_>>(),
+            ["sw1.vlan10"]
+        );
+        let reparsed = isoloom_core::parse(&to_yaml(&spec).unwrap()).unwrap();
+        let problems = isoloom_core::validate(&reparsed);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            config_files(&topo),
+            [(
+                config_path("sw1"),
+                "spanning-tree mode rapid-pvst\n".to_string()
+            )]
+        );
     }
 
     #[test]
