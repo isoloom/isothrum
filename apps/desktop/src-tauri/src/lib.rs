@@ -2,43 +2,26 @@
 //! running a lab on this machine and capturing its traffic. The editor finds these commands on
 //! `window.__TAURI__` and shows Run, Stop and Capture only here.
 
+mod captures;
 mod console;
 mod lab_files;
+mod lab_name;
 mod runner;
 mod terminal;
 mod tools;
 mod vms;
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+
+use captures::Captures;
+use lab_name::checked;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 // The window shows the editor bundled with the app (`apps/desktop/editor`, built from the website
 // by `npm run editor`): it works offline. `ISOTHRUM_URL` points it at a site instead (isothrum.com
 // for accounts and saved projects, or a local build while developing).
-
-/// Captures in progress, by `<lab>/<network>`.
-#[derive(Default)]
-struct Captures(Mutex<HashMap<String, runner::Capture>>);
-
-/// Lab names come from the editor and become folder names: kebab-case only, nothing else.
-fn checked(name: &str) -> Result<&str, String> {
-    let ok = !name.is_empty()
-        && name.len() <= 63
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if ok {
-        Ok(name)
-    } else {
-        Err(format!(
-            "`{name}` isn't a lab name (lowercase letters, digits and dashes)"
-        ))
-    }
-}
 
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
@@ -117,12 +100,7 @@ async fn lab_down(
 ) -> Result<String, String> {
     let name = checked(&name)?.to_string();
     // Stopping the lab ends its captures too.
-    if let Ok(mut all) = captures.0.lock() {
-        let prefix = format!("{name}/");
-        for (_, mut c) in all.extract_if(|k, _| k.starts_with(&prefix)) {
-            c.stop();
-        }
-    }
+    captures.stop_lab(&name);
     let dir = runner::lab_dir(&data_dir(&app)?, &name);
     tauri::async_runtime::spawn_blocking(move || runner::down(&dir))
         .await
@@ -148,6 +126,16 @@ struct CaptureStarted {
     file: Option<String>,
 }
 
+/// Where a capture without Wireshark goes: `<data>/captures/<lab>-<network>-<seconds>.pcap`.
+fn capture_file(data: &Path, lab: &str, network: &str) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    data.join("captures")
+        .join(format!("{lab}-{network}-{stamp}.pcap"))
+}
+
 /// Captures a LAN's or a cable's traffic (`network` is its name in isoloom.yml).
 #[tauri::command]
 async fn capture_start(
@@ -159,32 +147,17 @@ async fn capture_start(
     let name = checked(&name)?.to_string();
     let data = data_dir(&app)?;
     let dir = runner::lab_dir(&data, &name);
-    let key = format!("{name}/{network}");
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let file = data
-        .join("captures")
-        .join(format!("{name}-{network}-{stamp}.pcap"));
-    let capture = tauri::async_runtime::spawn_blocking(
-        move || -> Result<runner::Capture, runner::RunError> {
-            let yaml = std::fs::read_to_string(dir.join("isoloom.yml"))
-                .map_err(|_| runner::RunError::Spec("start the lab first".into()))?;
-            let spec =
-                isoloom_core::parse(&yaml).map_err(|e| runner::RunError::Spec(e.to_string()))?;
-            let plan = runner::plan_capture(&dir, &spec, &network)?;
-            runner::start_capture(&plan, &file)
-        },
-    )
+    let file = capture_file(&data, &name, &network);
+    let net = network.clone();
+    let capture = tauri::async_runtime::spawn_blocking(move || {
+        let plan = runner::plan_capture(&dir, &runner::lab_spec(&dir)?, &net)?;
+        runner::start_capture(&plan, &file)
+    })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
     let file = capture.file.as_ref().map(|f| f.display().to_string());
-    let mut all = captures.0.lock().map_err(|e| e.to_string())?;
-    if let Some(mut old) = all.insert(key, capture) {
-        old.stop();
-    }
+    captures.add(&name, &network, capture);
     Ok(CaptureStarted { file })
 }
 
@@ -194,10 +167,7 @@ fn capture_stop(
     name: String,
     network: String,
 ) -> Result<(), String> {
-    let key = format!("{}/{network}", checked(&name)?);
-    if let Some(mut c) = captures.0.lock().map_err(|e| e.to_string())?.remove(&key) {
-        c.stop();
-    }
+    captures.stop(checked(&name)?, &network);
     Ok(())
 }
 
@@ -334,7 +304,7 @@ pub fn run() {
     tools::complete_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(Captures::default())
+        .manage(Captures::<runner::Capture>::default())
         .invoke_handler(tauri::generate_handler![
             desktop_info,
             lab_up,
@@ -371,11 +341,8 @@ pub fn run() {
             // Leaving the app ends every capture it started.
             if let tauri::RunEvent::Exit = event
                 && let Some(c) = app.try_state::<Captures>()
-                && let Ok(mut all) = c.0.lock()
             {
-                for (_, mut cap) in all.drain() {
-                    cap.stop();
-                }
+                c.stop_all();
             }
         });
 }
