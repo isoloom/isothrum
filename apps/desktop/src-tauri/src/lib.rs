@@ -2,6 +2,7 @@
 //! running a lab on this machine and capturing its traffic. The editor finds these commands on
 //! `window.__TAURI__` and shows Run, Stop and Capture only here.
 
+mod capabilities;
 mod captures;
 mod console;
 mod lab_files;
@@ -321,7 +322,10 @@ pub fn run() {
             update_check,
             update_install
         ])
-        .setup(|app| open_main_window(app))
+        .setup(|app| {
+            capabilities::allow_local_site(app)?;
+            open_main_window(app)
+        })
         .build(tauri::generate_context!())
         .expect("Isothrum desktop failed to start")
         .run(on_event);
