@@ -28,8 +28,8 @@ The Isothrum editor in a window, plus what a browser can't do: **run a lab on th
   offers to restart on a newer one.
 
 The editor shows these controls only when it finds the app's bridge (`window.__TAURI__`). Only
-the bundled editor, isothrum.com and `http://localhost` (developing) may call the app's
-commands: see `src-tauri/capabilities/editor.json`.
+the bundled editor and isothrum.com may call the app's commands (`src-tauri/capabilities/editor.json`);
+debug builds also allow `http://localhost` for a local build of the site (`src-tauri/src/capabilities.rs`).
 
 ## Needs
 
