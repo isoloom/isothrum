@@ -2,7 +2,10 @@
 //! running a lab on this machine and capturing its traffic. The editor finds these commands on
 //! `window.__TAURI__` and shows Run, Stop and Capture only here.
 
+mod console;
 mod runner;
+mod terminal;
+mod tools;
 mod vms;
 
 use std::collections::HashMap;
@@ -68,8 +71,8 @@ async fn desktop_info(app: AppHandle) -> Result<DesktopInfo, String> {
     Ok(DesktopInfo {
         version: env!("CARGO_PKG_VERSION"),
         docker,
-        vagrant: runner::has("vagrant"),
-        wireshark: runner::has("wireshark"),
+        vagrant: tools::has("vagrant"),
+        wireshark: tools::has("wireshark"),
         live_capture: runner::live_capture_possible(),
         labs,
     })
@@ -205,7 +208,7 @@ async fn machine_console(app: AppHandle, name: String, machine: String) -> Resul
     tauri::async_runtime::spawn_blocking(move || {
         let spec = runner::lab_spec(&dir)?;
         let cmd = runner::console_command(&dir, &spec, &machine)?;
-        runner::open_terminal(&format!("{machine} ({name})"), &cmd)
+        terminal::open_terminal(&format!("{machine} ({name})"), &cmd)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -327,6 +330,7 @@ async fn update_install(app: AppHandle) -> Result<(), String> {
 }
 
 pub fn run() {
+    tools::complete_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Captures::default())
