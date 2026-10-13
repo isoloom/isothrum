@@ -308,7 +308,13 @@ mod tests {
             file: Some(file.clone()),
             container: Some(name),
         };
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        // tcpdump writes the pcap header when it starts: after the capture image's download,
+        // the first time.
+        let started = (0..240).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::fs::metadata(&file).is_ok_and(|m| m.len() >= 24)
+        });
+        assert!(started, "tcpdump didn't start");
         run(
             compose(
                 &dir,
