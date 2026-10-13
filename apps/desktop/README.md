@@ -16,6 +16,8 @@ The Isothrum editor in a window, plus what a browser can't do: **run a lab on th
   Terminal, Konsole, Xfce Terminal, Alacritty, `x-terminal-emulator` or xterm (Terminal.app on
   macOS, cmd on Windows).
 - **Start, stop, restart** one machine, with its network sidecar (its routes come back).
+- **Auto-start**: a lab set to it (in the Run window) starts when the app opens on it, unless it is
+  running already.
 - **Live status**: while the lab runs, each machine shows its state on the canvas (a dot: running,
   starting, unhealthy, stopped; with its health when its image has a check), each cable whether it
   carries traffic, is suspended or down, and each LAN how many of its ports are up. The ports are

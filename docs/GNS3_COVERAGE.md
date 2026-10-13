@@ -42,7 +42,7 @@ mechanism) · **Planned** (on the roadmap) · **Out** (not planned; reason given
 | Telnet console to a node | Covered | Desktop app: a terminal with a shell in the container, SSH to a Cisco appliance, or `vagrant ssh` to a VM |
 | VNC / SPICE console | Planned | Browser console for VM nodes |
 | Start / stop / suspend / reload a node | Covered | Desktop app: start, stop and restart one machine (no suspend) |
-| Auto-start on open | Planned | Runner setting |
+| Auto-start on open | Covered | Desktop app: a lab set to it in the Run window starts when the app opens on it |
 | Snapshots of a node | Covered | Desktop app: `docker commit` for containers, `vagrant snapshot` for VMs |
 
 ## Projects and editing
