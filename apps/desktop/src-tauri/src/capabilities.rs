@@ -55,6 +55,19 @@ mod tests {
         assert!(!EDITOR.contains("localhost") && !EDITOR.contains("127.0.0.1"));
     }
 
+    /// The updater's file for macOS is the `.app` bundle, archived (`Isothrum.app.tar.gz`): without
+    /// the `app` target, a release has nothing for Macs to update from.
+    #[test]
+    fn every_platform_has_an_update_to_download() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["bundle"]["createUpdaterArtifacts"], true);
+        let targets = conf["bundle"]["targets"].as_array().unwrap();
+        for t in ["app", "appimage", "msi"] {
+            assert!(targets.contains(&t.into()), "{t} in {targets:?}");
+        }
+    }
+
     #[test]
     fn the_bundled_editor_has_a_csp() {
         let conf: serde_json::Value =
