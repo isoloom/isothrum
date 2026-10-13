@@ -25,7 +25,7 @@ use isoloom_core::Spec;
 pub use capture::{CAPTURE_IMAGE, Capture, live_capture_possible, plan_capture, start_capture};
 pub use display::open_display;
 pub use lifecycle::{down, prepare, status, up};
-pub use links::{Link, link_action, suspended_links};
+pub use links::{Link, editor_links, link_action, suspended_links};
 pub use live::{LabLive, lab_live};
 pub use machines::{SHELL, console_command, container, machine_action};
 pub use snapshots::{Snapshot, delete_snapshot, snapshots, take_snapshot, use_snapshot};
@@ -136,6 +136,37 @@ pub fn run(mut cmd: Command, what: &str) -> Result<String, RunError> {
             what: what.into(),
             output: text,
         })
+    }
+}
+
+/// The spec's network that the editor names `name`. Isoloom flattens a switch's VLANs into
+/// networks of their own (`sw1.vlan10` becomes `sw1-vlan10`), while the editor names a VLAN's
+/// LAN `vlan10` (a name it gives one switch only); a plain LAN or cable keeps its name.
+pub fn spec_network(spec: &Spec, name: &str) -> Result<String, RunError> {
+    if spec.networks.contains_key(name) {
+        return Ok(name.to_string());
+    }
+    let (lan, vlan) = match name.split_once('.') {
+        Some((lan, vlan)) => (Some(lan), vlan),
+        None => (None, name),
+    };
+    let id: Option<u16> = vlan.strip_prefix("vlan").and_then(|v| v.parse().ok());
+    spec.networks
+        .iter()
+        .find(|(_, n)| {
+            n.vlan
+                .as_ref()
+                .is_some_and(|(l, i)| Some(*i) == id && lan.is_none_or(|lan| lan == l))
+        })
+        .map(|(flat, _)| flat.clone())
+        .ok_or_else(|| RunError::Spec(format!("the lab has no network `{name}`")))
+}
+
+/// The editor's name for one of the spec's networks: `vlan10` for a VLAN's, else its own.
+pub fn editor_network(spec: &Spec, network: &str) -> String {
+    match spec.networks.get(network).and_then(|n| n.vlan.as_ref()) {
+        Some((_, id)) => format!("vlan{id}"),
+        None => network.to_string(),
     }
 }
 

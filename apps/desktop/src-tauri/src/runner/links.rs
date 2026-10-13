@@ -40,6 +40,17 @@ fn save(dir: &Path, links: &[Link]) -> Result<(), RunError> {
     std::fs::write(dir.join(LINKS), text).map_err(|e| RunError::Io(e.to_string()))
 }
 
+/// The links with their networks as the editor names them (a VLAN's is `vlan10`).
+pub fn editor_links(spec: &Spec, links: Vec<Link>) -> Vec<Link> {
+    links
+        .into_iter()
+        .map(|l| Link {
+            network: super::editor_network(spec, &l.network),
+            machine: l.machine,
+        })
+        .collect()
+}
+
 /// Forgets the suspended links (the lab is stopped: its machines are gone).
 pub fn clear_links(dir: &Path) {
     let _ = std::fs::remove_file(dir.join(LINKS));
@@ -120,6 +131,9 @@ pub fn link_action(
             )));
         }
     };
+    // Recorded by the spec's name (what the machines are on); reported by the editor's.
+    let network = super::spec_network(spec, network)?;
+    let network = network.as_str();
     let (prefix, names) = ports(spec, network, machines.as_deref())?;
     let mut failed = Vec::new();
     let mut done = Vec::new();
@@ -134,6 +148,7 @@ pub fn link_action(
     }
     let links = with(&suspended_links(dir), &done, suspend);
     save(dir, &links)?;
+    let links = editor_links(spec, links);
     if !failed.is_empty() {
         return Err(RunError::Command {
             what: if suspend {
@@ -281,6 +296,24 @@ mod tests {
         assert!(!dir.join(LINKS).exists() && suspended_links(&dir).is_empty());
         clear_links(&dir);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A switch's VLAN is `vlan10` in the editor, `sw1.vlan10` in isoloom.yml and `sw1-vlan10`
+    /// once Isoloom has flattened it: every command takes the editor's name.
+    #[test]
+    fn a_vlan_goes_by_the_editors_name() {
+        use crate::runner::{editor_network, spec_network};
+        let spec = isoloom_core::parse("version: 1\nname: v\nnetworks:\n  sw1:\n    cidr: 10.10.0.0/19\n    vlans:\n      10: { cidr: 10.10.10.0/24 }\n      20: { cidr: 10.10.20.0/24 }\n  office: { cidr: 10.20.0.0/24 }\nmachines:\n  pc: { networks: { sw1.vlan10: 10, office: 10 }, docker: { image: \"alpine:3.20\" } }\n  srv: { networks: { sw1.vlan20: 10 }, docker: { image: \"alpine:3.20\" } }\n").unwrap();
+        for name in ["vlan10", "sw1.vlan10", "sw1-vlan10"] {
+            assert_eq!(spec_network(&spec, name).unwrap(), "sw1-vlan10", "{name}");
+        }
+        assert_eq!(spec_network(&spec, "office").unwrap(), "office");
+        assert!(spec_network(&spec, "vlan30").is_err());
+        assert!(spec_network(&spec, "sw2.vlan10").is_err());
+        assert_eq!(editor_network(&spec, "sw1-vlan20"), "vlan20");
+        assert_eq!(editor_network(&spec, "office"), "office");
+        let (prefix, on) = ports(&spec, &spec_network(&spec, "vlan10").unwrap(), None).unwrap();
+        assert_eq!((prefix.as_str(), on), ("10.10.10.", vec!["pc".to_string()]));
     }
 
     #[test]
