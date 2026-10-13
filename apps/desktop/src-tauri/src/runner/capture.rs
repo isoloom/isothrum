@@ -52,6 +52,7 @@ pub struct CapturePlan {
 /// Picks the machine to capture from: on `network`, the first one Isoloom attached to it.
 /// Every machine on a LAN or cable sees its traffic on that segment, so any member works.
 pub fn plan_capture(dir: &Path, spec: &Spec, network: &str) -> Result<CapturePlan, RunError> {
+    let network = &super::spec_network(spec, network)?;
     let net = spec
         .networks
         .get(network)
@@ -287,6 +288,42 @@ mod tests {
             args.windows(2)
                 .any(|w| w == ["--name", "isothrum-capture-1-0"])
         );
+    }
+
+    /// Needs Docker (run with `--ignored`): a capture on a switch's VLAN, named as the editor
+    /// names it (`vlan10`), records that VLAN's traffic.
+    #[test]
+    #[ignore]
+    fn a_capture_on_a_vlan_records_its_traffic() {
+        use crate::runner::{down, prepare, up};
+        let dir = std::env::temp_dir().join(format!("isothrum-vcap-{}", std::process::id()));
+        let yaml = "version: 1\nname: vcap\nnetworks:\n  sw1:\n    cidr: 10.65.0.0/19\n    vlans:\n      10: { cidr: 10.65.10.0/24 }\nmachines:\n  pc: { networks: { sw1.vlan10: 10 }, docker: { image: \"alpine:3.20\", idle: true } }\n  srv: { networks: { sw1.vlan10: 11 }, docker: { image: \"alpine:3.20\", idle: true } }\n";
+        let spec = prepare(&dir, yaml, &[]).unwrap();
+        up(&dir).unwrap();
+        let plan = plan_capture(&dir, &spec, "vlan10").unwrap();
+        let file = dir.join("vlan10.pcap");
+        let name = capture_name();
+        let mut capture = Capture {
+            children: vec![into_file(capture_command(&plan, &name), &file).unwrap()],
+            file: Some(file.clone()),
+            container: Some(name),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        run(
+            compose(
+                &dir,
+                &["exec", "-T", "pc", "ping", "-c", "3", "10.65.10.11"],
+            ),
+            "ping",
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        capture.stop();
+        // A pcap header is 24 bytes; three pings and their replies are well over 300.
+        let size = std::fs::metadata(&file).unwrap().len();
+        down(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(size > 300, "the capture has {size} bytes");
     }
 
     #[test]

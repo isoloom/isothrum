@@ -166,7 +166,7 @@ fn ports_from(
             };
             out.push(PortLive {
                 machine: name.clone(),
-                network: network.clone(),
+                network: super::editor_network(spec, network),
                 up,
                 interface,
             });

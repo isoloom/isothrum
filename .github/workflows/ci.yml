@@ -48,7 +48,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       # The tests that run real labs (Docker is on the runner).
-      - run: cargo test -- --ignored one_machine_stops_starts_and_has_a_console a_snapshot_brings_a_machine_back_as_it_was a_suspended_link_carries_nothing_until_resumed the_probe_sees_a_suspended_link
+      - run: cargo test -- --ignored one_machine_stops_starts_and_has_a_console a_snapshot_brings_a_machine_back_as_it_was a_suspended_link_carries_nothing_until_resumed the_probe_sees_a_suspended_link a_capture_on_a_vlan_records_its_traffic
 
   desktop-platforms:
     name: Desktop app (${{ matrix.os }})

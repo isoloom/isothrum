@@ -225,10 +225,12 @@ async fn lab_live(app: AppHandle, name: String) -> Result<Option<runner::LabLive
 /// The lab's suspended links (a machine's port on a network, cut).
 #[tauri::command]
 fn link_list(app: AppHandle, name: String) -> Result<Vec<runner::Link>, String> {
-    Ok(runner::suspended_links(&runner::lab_dir(
-        &data_dir(&app)?,
-        checked(&name)?,
-    )))
+    let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
+    let links = runner::suspended_links(&dir);
+    Ok(match runner::lab_spec(&dir) {
+        Ok(spec) => runner::editor_links(&spec, links),
+        Err(_) => links,
+    })
 }
 
 /// Suspends or resumes a link of the running lab: the ports of `machines` on `network` (a
