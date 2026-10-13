@@ -16,6 +16,19 @@ The Isothrum editor in a window, plus what a browser can't do: **run a lab on th
   Terminal, Konsole, Xfce Terminal, Alacritty, `x-terminal-emulator` or xterm (Terminal.app on
   macOS, cmd on Windows).
 - **Start, stop, restart** one machine, with its network sidecar (its routes come back).
+- **Auto-start**: a lab set to it (in the Run window) starts when the app opens on it, unless it is
+  running already.
+- **Live status**: while the lab runs, each machine shows its state on the canvas (a dot: running,
+  starting, unhealthy, stopped; with its health when its image has a check), each cable whether it
+  carries traffic, is suspended or down, and each LAN how many of its ports are up. The ports are
+  read from the machines every few seconds: one throwaway container (`nsenter`, privileged, in
+  the host's PID namespace) lists each running machine's links. A lab with VMs isn't probed: its
+  ports follow the machines' states and the suspended links.
+- **Suspend / resume a link**: a cable's ends (or every link of a LAN) set down in the machines'
+  network namespaces, as pulling the cable would, and up again with their routes (the machine's
+  routes sidecar restarted; a VM's `routes` provisioner run again). A cut link stays cut through
+  a restart of the machine, or of the lab, until the lab stops. A Cisco appliance's own port
+  can't be cut (its OS owns the address): a cable to one is cut at its other end.
 - **Snapshots**: a container saved as an image (`docker commit`: its files, a router's saved
   configuration; not named volumes), restored by running the machine from it; a VM's are
   Vagrant's (`vagrant snapshot`).

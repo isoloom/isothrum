@@ -200,9 +200,28 @@ pub fn snapshot_delete(
     )
 }
 
+/// `script`, as root in `machine`'s network namespace: in the VM over `vagrant ssh`, or for a
+/// hybrid lab's container, in the capture image on its host joined to the container's namespace.
+pub fn in_namespace(
+    lab: &Path,
+    runtime: Runtime,
+    machine: &str,
+    in_host: bool,
+    script: &str,
+) -> Command {
+    if !in_host {
+        return ssh_root(lab, runtime, machine, script);
+    }
+    let inner = script.replace('\'', "'\\''");
+    let host = format!(
+        "docker run --rm -i --net container:$(docker compose -f {HOST_COMPOSE} ps -q {machine}) --cap-add NET_RAW --cap-add NET_ADMIN {} sh -c '{inner}'",
+        crate::runner::CAPTURE_IMAGE
+    );
+    ssh_root(lab, runtime, DOCKER_HOST, &host)
+}
+
 /// A capture from `machine`: the container capture's script (find the interface on the network,
-/// pcap on stdout), in the VM with tcpdump installed first if missing, or for a hybrid lab's
-/// container, in the capture image on its host joined to the container's namespace.
+/// pcap on stdout) in its namespace, with tcpdump installed first in a VM that lacks it.
 pub fn capture_command(
     lab: &Path,
     runtime: Runtime,
@@ -210,18 +229,38 @@ pub fn capture_command(
     in_host: bool,
     script: &str,
 ) -> Command {
-    if in_host {
-        let inner = script.replace('\'', "'\\''");
-        let host = format!(
-            "docker run --rm -i --net container:$(docker compose -f {HOST_COMPOSE} ps -q {machine}) --cap-add NET_RAW --cap-add NET_ADMIN {} sh -c '{inner}'",
-            crate::runner::CAPTURE_IMAGE
+    let full = if in_host {
+        script.to_string()
+    } else {
+        format!(
+            "command -v tcpdump >/dev/null || {{ (apt-get install -y -qq tcpdump || dnf install -y -q tcpdump) >/dev/null 2>&1; }}; {script}"
+        )
+    };
+    in_namespace(lab, runtime, machine, in_host, &full)
+}
+
+/// Sets `machine`'s routes again after a link of its came back (the kernel dropped those
+/// through it): Isoloom's `routes` provisioners for a VM, a hybrid lab's container's sidecar
+/// restarted on its host. Best effort: a machine without routes has nothing to set.
+pub fn restore_routes(lab: &Path, runtime: Runtime, machine: &str, in_host: bool) {
+    let cmd = if in_host {
+        let script = format!(
+            "cd $(dirname {HOST_COMPOSE}) && docker compose -f {HOST_COMPOSE} config --services | grep -qx {machine}-routes && docker compose -f {HOST_COMPOSE} restart {machine}-routes || true"
         );
-        return ssh_root(lab, runtime, DOCKER_HOST, &host);
-    }
-    let full = format!(
-        "command -v tcpdump >/dev/null || {{ (apt-get install -y -qq tcpdump || dnf install -y -q tcpdump) >/dev/null 2>&1; }}; {script}"
-    );
-    ssh_root(lab, runtime, machine, &full)
+        ssh_root(lab, runtime, DOCKER_HOST, &script)
+    } else {
+        vagrant(
+            lab,
+            runtime,
+            &[
+                "provision",
+                machine,
+                "--provision-with",
+                "routes,default route",
+            ],
+        )
+    };
+    let _ = run(cmd, "Setting the routes again");
 }
 
 /// Standard, padded base64 (one small use: no dependency for it).

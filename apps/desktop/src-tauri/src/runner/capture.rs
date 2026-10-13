@@ -20,14 +20,23 @@ pub fn prefix_of(cidr: &str) -> Option<String> {
     Some(format!("{head}."))
 }
 
-/// The shell run inside the capture container: find the interface whose address starts with
-/// `prefix`, then stream its packets as pcap on stdout. The prefix is checked by the caller to
-/// be digits and dots only, so it can't break out of the quotes.
-pub fn capture_script(prefix: &str) -> String {
+/// The shell that finds the interface whose address starts with `prefix`, in `$IF` (a VLAN's
+/// `eth1.10@eth1` without its parent), or fails. The prefix is checked by the caller to be
+/// digits and dots only, so it can't break out of the quotes.
+pub fn interface_script(prefix: &str) -> String {
     format!(
         "IF=$(ip -o -4 addr show | awk -v p='{prefix}' 'index($4, p) == 1 {{ print $2; exit }}'); \
-         if [ -z \"$IF\" ]; then echo 'no interface on {prefix}0' >&2; exit 1; fi; \
-         exec tcpdump -i \"$IF\" -U -w -"
+         IF=${{IF%%@*}}; \
+         if [ -z \"$IF\" ]; then echo 'no interface on {prefix}0' >&2; exit 1; fi;"
+    )
+}
+
+/// The shell run inside the capture container: find the interface on `prefix`'s network, then
+/// stream its packets as pcap on stdout.
+pub fn capture_script(prefix: &str) -> String {
+    format!(
+        "{} exec tcpdump -i \"$IF\" -U -w -",
+        interface_script(prefix)
     )
 }
 

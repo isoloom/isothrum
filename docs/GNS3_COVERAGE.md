@@ -31,7 +31,7 @@ mechanism) · **Planned** (on the roadmap) · **Out** (not planned; reason given
 | Point-to-point cabling between ports | Covered | Each cable is its own /29 network (`isothrum-core`) |
 | Named ports (interfaces) | Covered | Free-text port names on each endpoint |
 | Link filters: latency, jitter, loss, bandwidth | Covered | Isoloom's `tc` on a LAN or a cable (netem on its router) |
-| Start / stop / suspend a link | Planned | Not in the desktop app yet |
+| Start / stop / suspend a link | Covered | Desktop app: a cable's ends (or every link of a LAN) set down in the machines' namespaces, and up again with their routes; a cut link stays cut through a restart of the machine or the lab, until the lab stops |
 | Packet capture on a link | Covered | Desktop app: `tcpdump` in a capture container (or a VM) on the LAN or cable, live into Wireshark or into a `.pcap` |
 | Routing between links | Covered | Routers you configure (Cisco, FRR…) or the automatic router's `reach` rules |
 
@@ -42,7 +42,7 @@ mechanism) · **Planned** (on the roadmap) · **Out** (not planned; reason given
 | Telnet console to a node | Covered | Desktop app: a terminal with a shell in the container, SSH to a Cisco appliance, or `vagrant ssh` to a VM |
 | VNC / SPICE console | Planned | Browser console for VM nodes |
 | Start / stop / suspend / reload a node | Covered | Desktop app: start, stop and restart one machine (no suspend) |
-| Auto-start on open | Planned | Runner setting |
+| Auto-start on open | Covered | Desktop app: a lab set to it in the Run window starts when the app opens on it |
 | Snapshots of a node | Covered | Desktop app: `docker commit` for containers, `vagrant snapshot` for VMs |
 
 ## Projects and editing

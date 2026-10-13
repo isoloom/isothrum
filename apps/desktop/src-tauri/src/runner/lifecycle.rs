@@ -68,24 +68,36 @@ fn valid_spec(yaml: &str) -> Result<Spec, RunError> {
     Err(RunError::Spec(list.join("\n")))
 }
 
+/// Starts the lab; the links suspended before it was started again stay cut.
 pub fn up(dir: &Path) -> Result<String, RunError> {
-    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
-        return crate::vms::up(dir, rt);
+    let mut out = if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        crate::vms::up(dir, rt)?
+    } else {
+        run(
+            compose(dir, &["up", "-d", "--wait", "--remove-orphans"]),
+            "Starting the lab",
+        )?
+    };
+    let notes = super::links::reapply_all_links(dir, &super::lab_spec(dir)?);
+    if !notes.is_empty() {
+        out.push('\n');
+        out.push_str(&notes);
     }
-    run(
-        compose(dir, &["up", "-d", "--wait", "--remove-orphans"]),
-        "Starting the lab",
-    )
+    Ok(out)
 }
 
+/// Stops the lab: its machines are gone, and its suspended links with them.
 pub fn down(dir: &Path) -> Result<String, RunError> {
-    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
-        return crate::vms::down(dir, rt);
-    }
-    run(
-        compose(dir, &["down", "--volumes", "--remove-orphans"]),
-        "Stopping the lab",
-    )
+    let out = if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        crate::vms::down(dir, rt)?
+    } else {
+        run(
+            compose(dir, &["down", "--volumes", "--remove-orphans"]),
+            "Stopping the lab",
+        )?
+    };
+    super::links::clear_links(dir);
+    Ok(out)
 }
 
 /// The lab's services and their state, as `docker compose ps` reports them (one JSON per line).
