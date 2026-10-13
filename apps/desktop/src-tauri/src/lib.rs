@@ -205,6 +205,52 @@ async fn machine_action(
     .map_err(|e| e.to_string())
 }
 
+/// The lab now: each machine's state, and each machine's port on each network, up or down (read
+/// from the machines). Empty when the lab hasn't been started.
+#[tauri::command]
+async fn lab_live(app: AppHandle, name: String) -> Result<Option<runner::LabLive>, String> {
+    let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
+    if !runner::prepared(&dir) {
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let spec = runner::lab_spec(&dir)?;
+        runner::lab_live(&dir, &spec).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+/// The lab's suspended links (a machine's port on a network, cut).
+#[tauri::command]
+fn link_list(app: AppHandle, name: String) -> Result<Vec<runner::Link>, String> {
+    Ok(runner::suspended_links(&runner::lab_dir(
+        &data_dir(&app)?,
+        checked(&name)?,
+    )))
+}
+
+/// Suspends or resumes a link of the running lab: the ports of `machines` on `network` (a
+/// cable's two ends, or one machine's port on a LAN), or of every machine on it.
+#[tauri::command]
+async fn link_action(
+    app: AppHandle,
+    name: String,
+    network: String,
+    machines: Option<Vec<String>>,
+    action: String,
+) -> Result<Vec<runner::Link>, String> {
+    let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        let spec = runner::lab_spec(&dir)?;
+        runner::link_action(&dir, &spec, &network, machines, &action)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 /// The lab's snapshots.
 #[tauri::command]
 fn snapshot_list(app: AppHandle, name: String) -> Result<Vec<runner::Snapshot>, String> {
@@ -311,10 +357,13 @@ pub fn run() {
             lab_up,
             lab_down,
             lab_status,
+            lab_live,
             capture_start,
             capture_stop,
             machine_console,
             machine_action,
+            link_list,
+            link_action,
             snapshot_list,
             snapshot_take,
             snapshot_use,

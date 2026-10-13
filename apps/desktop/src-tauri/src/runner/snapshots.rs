@@ -132,25 +132,29 @@ pub fn use_snapshot(dir: &Path, machine: &str, id: Option<&str>) -> Result<Strin
         return Err(RunError::Spec(format!("no snapshot `{id}` of `{machine}`")));
     }
     // A VM goes back to the snapshot's state and carries on from there: nothing to undo later.
-    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
-        return match id {
-            Some(id) => crate::vms::snapshot_restore(dir, rt, machine, id),
-            None => Ok(String::new()),
-        };
-    }
-    for s in list.iter_mut().filter(|s| s.machine == machine) {
-        s.in_use = Some(s.id.as_str()) == id;
-    }
-    save_snapshots(dir, &list)?;
-    let services = with_sidecar(dir, machine)?;
-    let names: Vec<&str> = services.iter().map(String::as_str).collect();
-    run(
-        compose(
-            dir,
-            &[&["up", "-d", "--no-deps", "--force-recreate"][..], &names].concat(),
-        ),
-        "Bringing the machine back",
-    )
+    let out = if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        match id {
+            Some(id) => crate::vms::snapshot_restore(dir, rt, machine, id)?,
+            None => return Ok(String::new()),
+        }
+    } else {
+        for s in list.iter_mut().filter(|s| s.machine == machine) {
+            s.in_use = Some(s.id.as_str()) == id;
+        }
+        save_snapshots(dir, &list)?;
+        let services = with_sidecar(dir, machine)?;
+        let names: Vec<&str> = services.iter().map(String::as_str).collect();
+        run(
+            compose(
+                dir,
+                &[&["up", "-d", "--no-deps", "--force-recreate"][..], &names].concat(),
+            ),
+            "Bringing the machine back",
+        )?
+    };
+    // The machine is back with its ports up: its suspended links are cut again.
+    super::links::reapply_links(dir, &lab_spec(dir)?, machine)?;
+    Ok(out)
 }
 
 /// Forgets a snapshot and removes its image (not while the machine runs from it).

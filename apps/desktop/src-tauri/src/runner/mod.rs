@@ -11,6 +11,8 @@
 
 mod capture;
 mod lifecycle;
+mod links;
+mod live;
 mod machines;
 mod snapshots;
 
@@ -21,6 +23,8 @@ use isoloom_core::Spec;
 
 pub use capture::{CAPTURE_IMAGE, Capture, live_capture_possible, plan_capture, start_capture};
 pub use lifecycle::{down, prepare, status, up};
+pub use links::{Link, link_action, suspended_links};
+pub use live::{LabLive, lab_live};
 pub use machines::{SHELL, console_command, container, machine_action};
 pub use snapshots::{Snapshot, delete_snapshot, snapshots, take_snapshot, use_snapshot};
 

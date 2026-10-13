@@ -8,18 +8,20 @@ use isoloom_core::Spec;
 use super::{RunError, Runtime, compose, run, runtime};
 use crate::console::Console;
 
-/// The machine's container in the running lab.
-pub fn container(dir: &Path, machine: &str) -> Result<String, RunError> {
+/// The machine's container, when it runs.
+pub fn running_container(dir: &Path, machine: &str) -> Result<Option<String>, RunError> {
     let id = run(compose(dir, &["ps", "-q", machine]), "Finding the machine")?
         .trim()
         .to_string();
-    if id.is_empty() {
-        return Err(RunError::Command {
-            what: format!("`{machine}`"),
-            output: "isn't running".into(),
-        });
-    }
-    Ok(id)
+    Ok((!id.is_empty()).then_some(id))
+}
+
+/// The machine's container in the running lab.
+pub fn container(dir: &Path, machine: &str) -> Result<String, RunError> {
+    running_container(dir, machine)?.ok_or_else(|| RunError::Command {
+        what: format!("`{machine}`"),
+        output: "isn't running".into(),
+    })
 }
 
 /// A container's shell: bash when it has it, else sh.
@@ -91,9 +93,20 @@ pub fn machine_action(
     if !spec.machines.contains_key(machine) {
         return Err(RunError::Spec(format!("no machine named `{machine}`")));
     }
-    if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
-        return crate::vms::action(dir, spec, rt, machine, action);
+    let out = if let rt @ (Runtime::Vagrant | Runtime::Hybrid) = runtime(dir) {
+        crate::vms::action(dir, spec, rt, machine, action)?
+    } else {
+        compose_action(dir, machine, action)?
+    };
+    // A machine comes back with its ports up: its suspended links are cut again.
+    if action != "stop" {
+        super::links::reapply_links(dir, spec, machine)?;
     }
+    Ok(out)
+}
+
+/// Starts, stops or restarts one machine's Compose services (itself and its sidecar).
+fn compose_action(dir: &Path, machine: &str, action: &str) -> Result<String, RunError> {
     let services = with_sidecar(dir, machine)?;
     let names: Vec<&str> = services.iter().map(String::as_str).collect();
     match action {
