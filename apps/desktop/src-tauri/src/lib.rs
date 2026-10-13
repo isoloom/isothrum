@@ -187,6 +187,20 @@ async fn machine_console(app: AppHandle, name: String, machine: String) -> Resul
     .map_err(|e| e.to_string())
 }
 
+/// Opens one machine's screen (GNS3's VNC console): a container's VNC server, or a VM's display.
+/// Returns what was opened (a `vnc://` address, or the VM's window).
+#[tauri::command]
+async fn machine_display(app: AppHandle, name: String, machine: String) -> Result<String, String> {
+    let dir = runner::lab_dir(&data_dir(&app)?, checked(&name)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        let spec = runner::lab_spec(&dir)?;
+        runner::open_display(&dir, &spec, &machine)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 /// Starts, stops or restarts one machine of the running lab.
 #[tauri::command]
 async fn machine_action(
@@ -361,6 +375,7 @@ pub fn run() {
             capture_start,
             capture_stop,
             machine_console,
+            machine_display,
             machine_action,
             link_list,
             link_action,

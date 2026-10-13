@@ -9,6 +9,7 @@ fn main() {
         "capture_start",
         "capture_stop",
         "machine_console",
+        "machine_display",
         "machine_action",
         "link_list",
         "link_action",

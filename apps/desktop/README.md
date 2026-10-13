@@ -12,9 +12,16 @@ The Isothrum editor in a window, plus what a browser can't do: **run a lab on th
   a VM, its hybrid one when VMs and containers mix (the containers in a Docker host VM). The
   lab's own files (provisioning scripts, appliance configurations) are written next to it.
 - **Console**: a terminal on a machine: a shell in its container, SSH to a Cisco appliance's
-  management address (`admin`/`admin`), or `vagrant ssh` to a VM. The terminal is `$TERMINAL`, else GNOME
+  management address (`admin`/`admin`, from a helper container on that network), or `vagrant ssh` to a VM. The terminal is `$TERMINAL`, else GNOME
   Terminal, Konsole, Xfce Terminal, Alacritty, `x-terminal-emulator` or xterm (Terminal.app on
   macOS, cmd on Windows).
+- **Screen (VNC)**: what a machine shows, in a viewer here, as GNS3's VNC console. A container whose
+  image runs a VNC server (it exposes a port in 5900–5999) is reached through a forwarder container
+  publishing it on 127.0.0.1 (container addresses aren't reachable from the host under Docker
+  Desktop), opened as `vnc://` (Screen Sharing on macOS); a VirtualBox VM opens its own screen
+  window, a libvirt VM its VNC or SPICE display. Stopping the lab removes the forwarders.
+- **In the editor**, as in GNS3: double-click a running machine for its console, right-click it
+  for its console, its screen, and starting, stopping or restarting it.
 - **Start, stop, restart** one machine, with its network sidecar (its routes come back).
 - **Auto-start**: a lab set to it (in the Run window) starts when the app opens on it, unless it is
   running already.

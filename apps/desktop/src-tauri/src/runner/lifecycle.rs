@@ -97,6 +97,7 @@ pub fn down(dir: &Path) -> Result<String, RunError> {
         )?
     };
     super::links::clear_links(dir);
+    super::display::remove_forwarders(dir);
     Ok(out)
 }
 
