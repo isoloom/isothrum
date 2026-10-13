@@ -46,25 +46,33 @@ pub fn console_command(dir: &Path, spec: &Spec, machine: &str) -> Result<Console
     ]))
 }
 
-/// SSH to a network appliance's OS, at its management address (`admin`/`admin`).
+/// SSH to a network appliance's OS, at its management address (`admin`/`admin`), from a helper
+/// container on the management network: under Docker Desktop (macOS, Windows) the host can't
+/// reach container addresses.
 fn appliance_console(id: &str, machine: &str) -> Result<Console, RunError> {
-    let ip = management_address(id)?.ok_or_else(|| RunError::Command {
+    let (network, ip) = management_address(id)?.ok_or_else(|| RunError::Command {
         what: format!("`{machine}`"),
         output: "has no management address".into(),
     })?;
-    let no_file = if cfg!(windows) { "NUL" } else { "/dev/null" };
     Ok(Console::new(&[
+        "docker",
+        "run",
+        "-it",
+        "--rm",
+        "--network",
+        &network,
+        super::CAPTURE_IMAGE,
         "ssh",
         "-o",
         "StrictHostKeyChecking=no",
         "-o",
-        &format!("UserKnownHostsFile={no_file}"),
+        "UserKnownHostsFile=/dev/null",
         &format!("admin@{ip}"),
     ]))
 }
 
-/// A container's address on Isoloom's management network.
-fn management_address(id: &str) -> Result<Option<String>, RunError> {
+/// A container's management network and its address there (Isoloom's management network).
+fn management_address(id: &str) -> Result<Option<(String, String)>, RunError> {
     let mut c = Command::new("docker");
     c.args([
         "inspect",
@@ -78,9 +86,9 @@ fn management_address(id: &str) -> Result<Option<String>, RunError> {
         .find_map(|l| {
             l.split_once(' ')
                 .filter(|(n, _)| n.ends_with("isoloom-mgmt"))
-                .map(|(_, ip)| ip.trim().to_string())
+                .map(|(n, ip)| (n.to_string(), ip.trim().to_string()))
         })
-        .filter(|ip| !ip.is_empty()))
+        .filter(|(_, ip)| !ip.is_empty()))
 }
 
 /// Starts, stops or restarts one machine (and its network sidecar, which sets its routes).

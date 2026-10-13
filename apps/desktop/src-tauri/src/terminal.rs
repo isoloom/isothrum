@@ -16,6 +16,27 @@ pub fn open_terminal(title: &str, console: &Console) -> Result<(), RunError> {
         .map_err(|e| RunError::Io(format!("couldn't open a terminal: {e}")))
 }
 
+/// Opens `url` (`vnc://...`, `spice://...`) with the system's handler for it: Screen Sharing for
+/// VNC on macOS, the desktop's default viewer elsewhere.
+pub fn open_url(url: &str) -> Result<(), RunError> {
+    let mut c = if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    } else {
+        Command::new("xdg-open")
+    };
+    c.arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| RunError::Io(format!("couldn't open {url}: {e}")))
+}
+
 /// macOS: Terminal.app, through AppleScript.
 #[cfg(target_os = "macos")]
 fn terminal(_title: &str, console: &Console) -> Result<Command, RunError> {

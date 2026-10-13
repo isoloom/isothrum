@@ -10,6 +10,7 @@
 //! containers: `vms.rs`. The lab's folder records which (`runtime`).
 
 mod capture;
+mod display;
 mod lifecycle;
 mod links;
 mod live;
@@ -22,6 +23,7 @@ use std::process::Command;
 use isoloom_core::Spec;
 
 pub use capture::{CAPTURE_IMAGE, Capture, live_capture_possible, plan_capture, start_capture};
+pub use display::open_display;
 pub use lifecycle::{down, prepare, status, up};
 pub use links::{Link, editor_links, link_action, suspended_links};
 pub use live::{LabLive, lab_live};

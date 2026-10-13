@@ -14,6 +14,7 @@
     "allow-capture-start",
     "allow-capture-stop",
     "allow-machine-console",
+    "allow-machine-display",
     "allow-machine-action",
     "allow-link-list",
     "allow-link-action",
