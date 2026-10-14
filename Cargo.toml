@@ -19,3 +19,9 @@ isothrum-core = { path = "crates/isothrum-core" }
 indexmap = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
+
+# The browser downloads the engine: build it for size (wasm-pack builds with --release).
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
