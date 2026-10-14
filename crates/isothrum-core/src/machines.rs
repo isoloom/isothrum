@@ -1,7 +1,7 @@
 //! The topology's nodes as Isoloom machines, and Cisco routers as their LANs' gateways.
 
 use indexmap::IndexMap;
-use isoloom_spec::model::{DockerImpl, VmImpl};
+use isoloom_spec::model::{CommandLine, DockerImpl, MachineFile, VmImpl};
 use isoloom_spec::{Appliance, Machine};
 
 use crate::draft::Draft;
@@ -28,6 +28,14 @@ fn machine(name: &str, node: &Node) -> Machine {
     let mut m = Machine {
         access: node.access,
         services: node.services.clone(),
+        environment: node.environment.clone(),
+        files: node.files.iter().map(machine_file).collect(),
+        command: node
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(|c| CommandLine::Shell(c.into())),
         ..Machine::default()
     };
     match &node.kind {
@@ -49,6 +57,18 @@ fn machine(name: &str, node: &Node) -> Machine {
         Kind::Router {} => unreachable!("automatic routers aren't machines"),
     }
     m
+}
+
+/// A file the editor placed in a machine, written by Isoloom with the default owner and mode.
+fn machine_file(file: &crate::NodeFile) -> MachineFile {
+    MachineFile {
+        path: file.path.trim().into(),
+        source: None,
+        content: Some(file.content.clone()),
+        uid: None,
+        gid: None,
+        mode: None,
+    }
 }
 
 /// A container node's Docker side.

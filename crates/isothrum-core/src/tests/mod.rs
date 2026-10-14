@@ -2,6 +2,7 @@ use super::*;
 
 mod cables;
 mod lans;
+mod machines;
 mod switches;
 
 fn node(kind: Kind) -> Node {
@@ -10,6 +11,9 @@ fn node(kind: Kind) -> Node {
         access: false,
         services: vec![],
         networks: IndexMap::new(),
+        environment: IndexMap::new(),
+        files: vec![],
+        command: None,
     }
 }
 
@@ -21,6 +25,7 @@ fn lan(cidr: &str) -> Lan {
         vlan: None,
         device: None,
         tc: None,
+        ipv6: None,
     }
 }
 

@@ -26,7 +26,7 @@ use isoloom_spec::Spec;
 use draft::Draft;
 pub use error::CompileError;
 pub use machines::{config_files, config_path, firmware_path};
-pub use model::{Endpoint, Kind, Lan, Link, Node, Topology};
+pub use model::{Endpoint, Kind, Lan, Link, Node, NodeFile, Topology};
 pub use vlans::vlan_ref;
 pub use yaml::to_yaml;
 

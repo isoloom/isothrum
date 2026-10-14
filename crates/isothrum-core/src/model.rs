@@ -40,6 +40,11 @@ pub struct Lan {
     /// How the LAN behaves (a slow or lossy link): Isoloom's `tc`.
     #[serde(default)]
     pub tc: Option<Tc>,
+    /// An IPv6 /64 block (`fd00:1::/64`): the LAN is dual-stack, each machine's IPv6 address
+    /// reading like its IPv4 one (`.10` is `fd00:1::10`). Not on a switch's VLANs (Isoloom keeps
+    /// those IPv4 for now).
+    #[serde(default)]
+    pub ipv6: Option<String>,
 }
 
 fn yes() -> bool {
@@ -59,6 +64,23 @@ pub struct Node {
     /// the next free one.
     #[serde(default)]
     pub networks: IndexMap<String, Option<u8>>,
+    /// Environment variables the machine runs with (Isoloom's `environment`).
+    #[serde(default)]
+    pub environment: IndexMap<String, String>,
+    /// Files written into the machine at start (a router's configuration, an app's settings).
+    #[serde(default)]
+    pub files: Vec<NodeFile>,
+    /// What the machine runs, as a shell line, instead of its image's own command.
+    #[serde(default)]
+    pub command: Option<String>,
+}
+
+/// A file placed in a machine: its absolute path and its text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeFile {
+    pub path: String,
+    pub content: String,
 }
 
 /// How a node is produced. Both kinds are first-class: a Docker container or a VM.

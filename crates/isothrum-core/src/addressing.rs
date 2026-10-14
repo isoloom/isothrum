@@ -1,6 +1,7 @@
 //! Addresses: each machine's on its LANs, and the cables' point-to-point blocks.
 
 use indexmap::IndexMap;
+use isoloom_spec::model::{Ipv6, Ipv6Addresses};
 
 use crate::draft::{Draft, network};
 use crate::{CompileError, Lan, Link, Topology};
@@ -76,10 +77,18 @@ fn address_lan(
         lan: name.into(),
         cidr: lan.cidr.clone(),
     })?;
-    draft.networks.insert(
-        name.into(),
-        network(lan.cidr.clone(), lan.internet, lan.tc.clone()),
-    );
+    let mut net = network(lan.cidr.clone(), lan.internet, lan.tc.clone());
+    net.ipv6 = lan
+        .ipv6
+        .as_deref()
+        .map(str::trim)
+        .filter(|block| !block.is_empty())
+        .map(|block| Ipv6 {
+            cidr: block.into(),
+            addresses: Ipv6Addresses::Static,
+            only: false,
+        });
+    draft.networks.insert(name.into(), net);
     let taken = asked_addresses(topo, draft, name)?;
     let mut free = usable(prefix).filter(|o| !taken.contains_key(o));
     for node in members(topo, draft, name, |octet| octet.is_none()) {
