@@ -94,10 +94,7 @@ fn addresses(spec: &Spec, topo: &Topology) -> IndexMap<String, Vec<(String, Stri
         .networks
         .iter()
         .filter_map(|(name, lan)| {
-            Some((
-                format!("{}-vlan{}", lan.switch.as_ref()?, lan.vlan?),
-                name,
-            ))
+            Some((format!("{}-vlan{}", lan.switch.as_ref()?, lan.vlan?), name))
         })
         .collect();
     spec.machines
