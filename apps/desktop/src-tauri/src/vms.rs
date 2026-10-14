@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use isoloom_core::Spec;
+use isoloom_spec::Spec;
 
 use crate::console::Console;
 use crate::runner::{RunError, Runtime, SHELL, run};
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn a_hybrid_labs_containers_go_through_their_host() {
-        let spec = isoloom_core::parse(
+        let spec = isoloom_spec::parse(
             "version: 1\nname: mixed\nnetworks:\n  lan: {cidr: 10.0.1.0/24}\nmachines:\n  web:\n    networks: {lan: 10}\n    docker: {image: nginx}\n  pc:\n    networks: {lan: 20}\n    vm: {os: debian-12}\n",
         )
         .unwrap();

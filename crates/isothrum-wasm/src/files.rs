@@ -26,7 +26,7 @@ pub(crate) fn config_files(topology_json: &str) -> Vec<File> {
 
 /// Starter scripts for the VMs' provisioning steps, where isoloom.yml points.
 pub(crate) fn starter_files(yaml: &str) -> Result<Vec<File>, String> {
-    let spec = isoloom_core::parse(yaml).map_err(|e| e.to_string())?;
+    let spec = isoloom_spec::parse(yaml).map_err(|e| e.to_string())?;
     Ok(isothrum_core::starters::starters(&spec)
         .into_iter()
         .map(|s| File {

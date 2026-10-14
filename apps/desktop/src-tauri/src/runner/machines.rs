@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use isoloom_core::Spec;
+use isoloom_spec::Spec;
 
 use super::{RunError, Runtime, compose, run, runtime};
 use crate::console::Console;

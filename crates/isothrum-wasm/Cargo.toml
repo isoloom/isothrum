@@ -9,7 +9,8 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-isoloom-core.workspace = true
+isoloom-spec.workspace = true
+isoloom-targets.workspace = true
 isothrum-core.workspace = true
 indexmap.workspace = true
 serde.workspace = true

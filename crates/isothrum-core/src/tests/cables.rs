@@ -86,6 +86,6 @@ fn many_cables_get_distinct_blocks() {
     }
     let spec = compile(&topo).unwrap();
     assert_eq!(spec.networks["link-99"].cidr, "10.200.3.24/29");
-    let problems = isoloom_core::validate(&spec);
+    let problems = isoloom_spec::validate(&spec);
     assert!(problems.is_empty(), "{problems:?}");
 }

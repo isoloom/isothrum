@@ -2,7 +2,7 @@
 //! ports.
 
 use indexmap::IndexMap;
-use isoloom_core::{Service, Tc};
+use isoloom_spec::{Service, Tc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,7 +73,7 @@ pub enum Kind {
         idle: bool,
         /// A network OS Isoloom wires as its image expects (Cisco IOL, as vrnetlab builds it).
         #[serde(default)]
-        appliance: Option<isoloom_core::Appliance>,
+        appliance: Option<isoloom_spec::Appliance>,
         /// The appliance's own configuration (IOS commands), written to `configs/<name>.cfg`.
         #[serde(default)]
         config: Option<String>,

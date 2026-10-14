@@ -6,7 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-isoloom-core.workspace = true
+isoloom-spec.workspace = true
+isoloom-targets.workspace = true
 indexmap.workspace = true
 serde.workspace = true
 serde_yaml_ng.workspace = true

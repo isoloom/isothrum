@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use isoloom_core::Spec;
+use isoloom_spec::Spec;
 
 use super::{RunError, Runtime, compose, run, runtime};
 use crate::tools::has;

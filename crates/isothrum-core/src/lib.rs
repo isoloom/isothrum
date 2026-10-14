@@ -21,7 +21,7 @@ mod vlans;
 mod yaml;
 
 use indexmap::IndexMap;
-use isoloom_core::Spec;
+use isoloom_spec::Spec;
 
 use draft::Draft;
 pub use error::CompileError;
@@ -31,7 +31,7 @@ pub use vlans::vlan_ref;
 pub use yaml::to_yaml;
 
 /// Compiles a topology into an Isoloom spec. The result is not validated yet: run
-/// `isoloom_core::validate` on it, which catches what the topology can't express on its own.
+/// `isoloom_spec::validate` on it, which catches what the topology can't express on its own.
 pub fn compile(topo: &Topology) -> Result<Spec, CompileError> {
     addressing::check_link_count(topo)?;
     vlans::check_switch_names(topo)?;
@@ -52,7 +52,9 @@ fn spec(topo: &Topology, draft: Draft) -> Spec {
         name: topo.name.clone(),
         networks: draft.networks,
         reach: draft.reach,
+        dns: None,
         inputs: vec![],
+        secrets: IndexMap::new(),
         machines: draft.machines,
         common: None,
         groups: IndexMap::new(),
@@ -63,6 +65,9 @@ fn spec(topo: &Topology, draft: Draft) -> Spec {
         tools: IndexMap::new(),
         clones: IndexMap::new(),
         cloud: None,
+        volumes: IndexMap::new(),
+        constraints: None,
+        controller: None,
     }
 }
 

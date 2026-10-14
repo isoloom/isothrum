@@ -1,7 +1,7 @@
 //! A switch's VLANs, nested under the LAN named after the switch (Isoloom's `vlans`).
 
 use indexmap::IndexMap;
-use isoloom_core::{Network, Reach, Vlan};
+use isoloom_spec::{Network, Reach, Vlan};
 
 use crate::draft::{Draft, network};
 use crate::{CompileError, Lan, Topology};

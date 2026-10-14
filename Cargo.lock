@@ -216,16 +216,121 @@ dependencies = [
 ]
 
 [[package]]
-name = "isoloom-core"
+name = "isoloom-compose"
 version = "0.10.1"
-source = "git+https://github.com/isoloom/isoloom?rev=bd87d009a62d71590cf2458270a52658b9325173#bd87d009a62d71590cf2458270a52658b9325173"
+source = "git+https://github.com/isoloom/isoloom?rev=0111b26ec9d83b3f8002540be8650a7f393cd061#0111b26ec9d83b3f8002540be8650a7f393cd061"
+dependencies = [
+ "indexmap",
+ "isoloom-plan",
+ "isoloom-render",
+ "isoloom-spec",
+ "serde",
+ "serde_yaml_ng",
+]
+
+[[package]]
+name = "isoloom-external"
+version = "0.10.1"
+source = "git+https://github.com/isoloom/isoloom?rev=0111b26ec9d83b3f8002540be8650a7f393cd061#0111b26ec9d83b3f8002540be8650a7f393cd061"
+dependencies = [
+ "isoloom-plan",
+ "isoloom-render",
+ "isoloom-spec",
+ "serde_json",
+]
+
+[[package]]
+name = "isoloom-kubernetes"
+version = "0.10.1"
+source = "git+https://github.com/isoloom/isoloom?rev=0111b26ec9d83b3f8002540be8650a7f393cd061#0111b26ec9d83b3f8002540be8650a7f393cd061"
+dependencies = [
+ "indexmap",
+ "isoloom-compose",
+ "isoloom-plan",
+ "isoloom-render",
+ "isoloom-spec",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "thiserror",
+]
+
+[[package]]
+name = "isoloom-plan"
+version = "0.10.1"
+source = "git+https://github.com/isoloom/isoloom?rev=0111b26ec9d83b3f8002540be8650a7f393cd061#0111b26ec9d83b3f8002540be8650a7f393cd061"
+dependencies = [
+ "indexmap",
+ "isoloom-spec",
+ "serde_json",
+]
+
+[[package]]
+name = "isoloom-render"
+version = "0.10.1"
+source = "git+https://github.com/isoloom/isoloom?rev=0111b26ec9d83b3f8002540be8650a7f393cd061#0111b26ec9d83b3f8002540be8650a7f393cd061"
 dependencies = [
  "hcl-rs",
+ "indexmap",
+ "isoloom-plan",
+ "isoloom-spec",
+ "serde_json",
+]
+
+[[package]]
+name = "isoloom-spec"
+version = "0.10.1"
+source = "git+https://github.com/isoloom/isoloom?rev=0111b26ec9d83b3f8002540be8650a7f393cd061#0111b26ec9d83b3f8002540be8650a7f393cd061"
+dependencies = [
  "indexmap",
  "schemars",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "thiserror",
+]
+
+[[package]]
+name = "isoloom-targets"
+version = "0.10.1"
+source = "git+https://github.com/isoloom/isoloom?rev=0111b26ec9d83b3f8002540be8650a7f393cd061#0111b26ec9d83b3f8002540be8650a7f393cd061"
+dependencies = [
+ "indexmap",
+ "isoloom-compose",
+ "isoloom-external",
+ "isoloom-kubernetes",
+ "isoloom-plan",
+ "isoloom-render",
+ "isoloom-spec",
+ "isoloom-terraform",
+ "isoloom-vagrant",
+ "serde_json",
+]
+
+[[package]]
+name = "isoloom-terraform"
+version = "0.10.1"
+source = "git+https://github.com/isoloom/isoloom?rev=0111b26ec9d83b3f8002540be8650a7f393cd061#0111b26ec9d83b3f8002540be8650a7f393cd061"
+dependencies = [
+ "indexmap",
+ "isoloom-compose",
+ "isoloom-plan",
+ "isoloom-render",
+ "isoloom-spec",
+ "serde_json",
+]
+
+[[package]]
+name = "isoloom-vagrant"
+version = "0.10.1"
+source = "git+https://github.com/isoloom/isoloom?rev=0111b26ec9d83b3f8002540be8650a7f393cd061#0111b26ec9d83b3f8002540be8650a7f393cd061"
+dependencies = [
+ "indexmap",
+ "isoloom-compose",
+ "isoloom-plan",
+ "isoloom-render",
+ "isoloom-spec",
+ "isoloom-terraform",
 ]
 
 [[package]]
@@ -233,7 +338,8 @@ name = "isothrum-core"
 version = "0.1.0"
 dependencies = [
  "indexmap",
- "isoloom-core",
+ "isoloom-spec",
+ "isoloom-targets",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -244,7 +350,8 @@ name = "isothrum-wasm"
 version = "0.1.0"
 dependencies = [
  "indexmap",
- "isoloom-core",
+ "isoloom-spec",
+ "isoloom-targets",
  "isothrum-core",
  "serde",
  "serde_json",

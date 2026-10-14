@@ -2,7 +2,8 @@
 //! each machine's addresses.
 
 use indexmap::IndexMap;
-use isoloom_core::{GeneratedFile, Spec};
+use isoloom_spec::Spec;
+use isoloom_targets::GeneratedFile;
 use isothrum_core::Topology;
 use serde::Serialize;
 
@@ -49,14 +50,14 @@ pub fn plan(topology_json: &str) -> Plan {
         Ok(parts) => parts,
         Err(e) => return Plan::failed(e),
     };
-    let problems: Vec<String> = isoloom_core::validate(&spec)
+    let problems: Vec<String> = isoloom_spec::validate(&spec)
         .iter()
         .map(|p| p.to_string())
         .collect();
     // Isoloom's generators assume a valid spec (an unattached machine has no address to give,
     // for example), so nothing is generated until validation passes.
     let (generated, skipped) = if problems.is_empty() {
-        isoloom_core::generate_all(&spec)
+        isoloom_targets::generate_all(&spec)
     } else {
         (vec![], vec![])
     };
@@ -81,7 +82,7 @@ fn compiled(topology_json: &str) -> Result<(Topology, String, Spec), String> {
         .map_err(|e| format!("the topology is malformed: {e}"))?;
     let spec = isothrum_core::compile(&topo).map_err(|e| e.to_string())?;
     let yaml = isothrum_core::to_yaml(&spec).map_err(|e| e.to_string())?;
-    let spec = isoloom_core::vlans::flatten(spec)?;
+    let spec = isoloom_spec::vlans::flatten(spec)?;
     Ok((topo, yaml, spec))
 }
 
@@ -94,7 +95,7 @@ fn addresses(spec: &Spec, topo: &Topology) -> IndexMap<String, Vec<(String, Stri
         .iter()
         .filter_map(|(name, lan)| {
             Some((
-                isoloom_core::vlans::vlan_network(lan.switch.as_ref()?, lan.vlan?),
+                format!("{}-vlan{}", lan.switch.as_ref()?, lan.vlan?),
                 name,
             ))
         })

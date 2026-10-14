@@ -20,7 +20,7 @@ mod snapshots;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use isoloom_core::Spec;
+use isoloom_spec::Spec;
 
 pub use capture::{CAPTURE_IMAGE, Capture, live_capture_possible, plan_capture, start_capture};
 pub use display::open_display;
@@ -174,5 +174,5 @@ pub fn editor_network(spec: &Spec, network: &str) -> String {
 pub fn lab_spec(dir: &Path) -> Result<Spec, RunError> {
     let yaml = std::fs::read_to_string(dir.join("isoloom.yml"))
         .map_err(|_| RunError::Spec("start the lab first".into()))?;
-    isoloom_core::parse(&yaml).map_err(|e| RunError::Spec(e.to_string()))
+    isoloom_spec::parse(&yaml).map_err(|e| RunError::Spec(e.to_string()))
 }

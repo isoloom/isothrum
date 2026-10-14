@@ -7,7 +7,7 @@
 //! Ansible `.yml` step a minimal playbook. They are starting points to edit, not a configuration
 //! management system.
 
-use isoloom_core::{Machine, Spec};
+use isoloom_spec::{Machine, Spec};
 
 /// A file to put in the download: its path in the project, and its contents.
 pub struct Starter {
@@ -283,7 +283,7 @@ mod tests {
     use super::*;
 
     fn spec(yaml: &str) -> Spec {
-        isoloom_core::parse(yaml).unwrap()
+        isoloom_spec::parse(yaml).unwrap()
     }
 
     #[test]

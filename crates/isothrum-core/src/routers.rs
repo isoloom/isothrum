@@ -1,6 +1,6 @@
 //! Automatic routers: every pair of a router's networks may reach each other, both ways.
 
-use isoloom_core::Reach;
+use isoloom_spec::Reach;
 
 use crate::draft::Draft;
 

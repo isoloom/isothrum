@@ -115,8 +115,8 @@ fn nodes_keep_their_kind_and_access() {
 fn the_compiled_spec_is_a_valid_isoloom_spec() {
     let spec = compile(&three_node()).unwrap();
     let yaml = to_yaml(&spec).unwrap();
-    let reparsed = isoloom_core::parse(&yaml).expect("the output parses as an Isoloom spec");
-    let problems = isoloom_core::validate(&reparsed);
+    let reparsed = isoloom_spec::parse(&yaml).expect("the output parses as an Isoloom spec");
+    let problems = isoloom_spec::validate(&reparsed);
     assert!(problems.is_empty(), "{problems:?}");
 }
 

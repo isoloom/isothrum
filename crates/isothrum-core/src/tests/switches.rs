@@ -29,8 +29,8 @@ fn a_cisco_switch_switches_its_vlans() {
         spec.machines["pc1"].networks.keys().collect::<Vec<_>>(),
         ["sw1.vlan10"]
     );
-    let reparsed = isoloom_core::parse(&to_yaml(&spec).unwrap()).unwrap();
-    let problems = isoloom_core::validate(&reparsed);
+    let reparsed = isoloom_spec::parse(&to_yaml(&spec).unwrap()).unwrap();
+    let problems = isoloom_spec::validate(&reparsed);
     assert!(problems.is_empty(), "{problems:?}");
     assert_eq!(
         config_files(&topo),
@@ -64,8 +64,8 @@ fn a_cisco_router_on_a_vlan_is_a_member_of_it() {
     // On a plain LAN it is still the gateway.
     assert_eq!(spec.networks["office"].gateway.as_deref(), Some("r"));
     assert_eq!(spec.machines["r"].networks["office"], 1);
-    let reparsed = isoloom_core::parse(&to_yaml(&spec).unwrap()).unwrap();
-    let problems = isoloom_core::validate(&reparsed);
+    let reparsed = isoloom_spec::parse(&to_yaml(&spec).unwrap()).unwrap();
+    let problems = isoloom_spec::validate(&reparsed);
     assert!(problems.is_empty(), "{problems:?}");
 }
 

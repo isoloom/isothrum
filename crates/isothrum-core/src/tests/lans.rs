@@ -15,7 +15,7 @@ fn machines_on_a_lan_take_its_free_addresses() {
     assert_eq!(spec.machines["client"].networks["office"], 11);
     assert_eq!(spec.machines["router"].networks["servers"], 10);
     assert_eq!(spec.machines["server"].networks["servers"], 11);
-    let problems = isoloom_core::validate(&spec);
+    let problems = isoloom_spec::validate(&spec);
     assert!(problems.is_empty(), "{problems:?}");
 }
 
@@ -31,7 +31,7 @@ fn a_small_lan_starts_low_and_fills_up() {
     assert_eq!(spec.machines["client"].networks["office"], 2);
     assert_eq!(spec.machines["router"].networks["office"], 3);
     assert_eq!(spec.machines["server"].networks["office"], 4);
-    let problems = isoloom_core::validate(&spec);
+    let problems = isoloom_spec::validate(&spec);
     assert!(problems.is_empty(), "{problems:?}");
 
     topo.nodes.insert(
@@ -93,7 +93,7 @@ fn lans_and_cables_mix() {
     assert_eq!(spec.networks.len(), 3);
     assert_eq!(spec.machines["client"].networks["link-0"], 2);
     let yaml = to_yaml(&spec).unwrap();
-    let problems = isoloom_core::validate(&isoloom_core::parse(&yaml).unwrap());
+    let problems = isoloom_spec::validate(&isoloom_spec::parse(&yaml).unwrap());
     assert!(problems.is_empty(), "{problems:?}");
 }
 
@@ -112,7 +112,7 @@ fn an_automatic_router_lets_its_networks_reach_each_other() {
         .map(|r| (r.from.as_str(), r.to.as_str()))
         .collect();
     assert_eq!(pairs, vec![("office", "servers"), ("servers", "office")]);
-    let problems = isoloom_core::validate(&spec);
+    let problems = isoloom_spec::validate(&spec);
     assert!(problems.is_empty(), "{problems:?}");
 }
 
@@ -134,6 +134,6 @@ fn an_automatic_router_routes_its_cables_too() {
             .iter()
             .any(|r| r.from == "link-0" && r.to == "servers")
     );
-    let problems = isoloom_core::validate(&spec);
+    let problems = isoloom_spec::validate(&spec);
     assert!(problems.is_empty(), "{problems:?}");
 }

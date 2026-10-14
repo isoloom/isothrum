@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use isoloom_core::Spec;
+use isoloom_spec::Spec;
 
 use super::capture::{CAPTURE_IMAGE, interface_script, prefix_of};
 use super::machines::{running_container, with_sidecar};
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn the_ports_of_a_link_are_the_machines_on_its_network() {
-        let spec = isoloom_core::parse(LAB).unwrap();
+        let spec = isoloom_spec::parse(LAB).unwrap();
         let (prefix, all) = ports(&spec, "office", None).unwrap();
         assert_eq!(
             (prefix.as_str(), all),
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn a_vlan_goes_by_the_editors_name() {
         use crate::runner::{editor_network, spec_network};
-        let spec = isoloom_core::parse("version: 1\nname: v\nnetworks:\n  sw1:\n    cidr: 10.10.0.0/19\n    vlans:\n      10: { cidr: 10.10.10.0/24 }\n      20: { cidr: 10.10.20.0/24 }\n  office: { cidr: 10.20.0.0/24 }\nmachines:\n  pc: { networks: { sw1.vlan10: 10, office: 10 }, docker: { image: \"alpine:3.20\" } }\n  srv: { networks: { sw1.vlan20: 10 }, docker: { image: \"alpine:3.20\" } }\n").unwrap();
+        let spec = isoloom_spec::parse("version: 1\nname: v\nnetworks:\n  sw1:\n    cidr: 10.10.0.0/19\n    vlans:\n      10: { cidr: 10.10.10.0/24 }\n      20: { cidr: 10.10.20.0/24 }\n  office: { cidr: 10.20.0.0/24 }\nmachines:\n  pc: { networks: { sw1.vlan10: 10, office: 10 }, docker: { image: \"alpine:3.20\" } }\n  srv: { networks: { sw1.vlan20: 10 }, docker: { image: \"alpine:3.20\" } }\n").unwrap();
         for name in ["vlan10", "sw1.vlan10", "sw1-vlan10"] {
             assert_eq!(spec_network(&spec, name).unwrap(), "sw1-vlan10", "{name}");
         }
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn a_link_action_is_suspend_or_resume() {
-        let spec = isoloom_core::parse(LAB).unwrap();
+        let spec = isoloom_spec::parse(LAB).unwrap();
         let dir = std::env::temp_dir().join(format!("isothrum-links-act-{}", std::process::id()));
         let err = link_action(&dir, &spec, "office", None, "cut").unwrap_err();
         assert!(err.to_string().contains("suspend or resume"), "{err}");

@@ -1,8 +1,8 @@
 //! The topology's nodes as Isoloom machines, and Cisco routers as their LANs' gateways.
 
 use indexmap::IndexMap;
-use isoloom_core::model::{DockerImpl, VmImpl};
-use isoloom_core::{Appliance, Machine};
+use isoloom_spec::model::{DockerImpl, VmImpl};
+use isoloom_spec::{Appliance, Machine};
 
 use crate::draft::Draft;
 use crate::vlans::vlan_ref;
@@ -42,6 +42,8 @@ fn machine(name: &str, node: &Node) -> Machine {
                 os: os.clone(),
                 provision: provision.clone(),
                 image: None,
+                tpm: None,
+                boot: None,
             });
         }
         Kind::Router {} => unreachable!("automatic routers aren't machines"),
@@ -72,6 +74,8 @@ fn docker(
             .filter(|c| !c.trim().is_empty())
             .map(|_| config_path(name)),
         firmware: dynamips.then(|| firmware_path(name)),
+        target: None,
+        lxc: false,
     }
 }
 
@@ -89,7 +93,7 @@ pub fn cisco_gateways(topo: &Topology, draft: &mut Draft) {
                     .is_some_and(|m| m.networks.contains_key(lan))
         });
         if let Some((name, _)) = router
-            && let Some(c) = isoloom_core::validate::Cidr::parse(&net.cidr)
+            && let Some(c) = isoloom_spec::validate::Cidr::parse(&net.cidr)
         {
             net.gateway = Some(name.clone());
             draft.machines[name]

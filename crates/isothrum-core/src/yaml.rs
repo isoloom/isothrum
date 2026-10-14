@@ -1,6 +1,6 @@
 //! The spec as the `isoloom.yml` a person would write.
 
-use isoloom_core::Spec;
+use isoloom_spec::Spec;
 
 use crate::CompileError;
 

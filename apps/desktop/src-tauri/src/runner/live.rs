@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use isoloom_core::Spec;
+use isoloom_spec::Spec;
 
 use super::capture::{CAPTURE_IMAGE, prefix_of};
 use super::links::suspended_links;
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn the_states_are_the_labs_machines_only() {
-        let spec = isoloom_core::parse(LAB).unwrap();
+        let spec = isoloom_spec::parse(LAB).unwrap();
         let ps = r#"{"Service":"a","State":"running","Health":"healthy"}
 {"Service":"a-routes","State":"running","Health":"healthy"}
 {"Service":"isoloom-router","State":"running","Health":""}"#;
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn each_port_is_up_down_or_unknown() {
-        let spec = isoloom_core::parse(LAB).unwrap();
+        let spec = isoloom_spec::parse(LAB).unwrap();
         let live = |state: &str| MachineLive {
             state: state.into(),
             health: String::new(),

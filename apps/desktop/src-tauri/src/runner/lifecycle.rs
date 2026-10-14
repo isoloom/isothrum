@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use isoloom_core::{Spec, Target};
+use isoloom_spec::{Spec, Target};
 
 use super::{RUNTIME, RunError, Runtime, compose, run, runtime};
 use crate::lab_files;
@@ -10,14 +10,14 @@ use crate::tools::has;
 
 /// The runtime that fits the lab and Isoloom's files for it: Docker when every machine is a
 /// container, else Vagrant (only VMs), else hybrid (both).
-pub fn generated(spec: &Spec) -> Result<(Runtime, Vec<isoloom_core::GeneratedFile>), RunError> {
+pub fn generated(spec: &Spec) -> Result<(Runtime, Vec<isoloom_targets::GeneratedFile>), RunError> {
     [
         (Runtime::Docker, Target::Docker),
         (Runtime::Vagrant, Target::Vagrant),
         (Runtime::Hybrid, Target::Hybrid),
     ]
     .into_iter()
-    .find_map(|(rt, t)| isoloom_core::generate(spec, t).ok().map(|f| (rt, f)))
+    .find_map(|(rt, t)| isoloom_targets::generate(spec, t).ok().map(|f| (rt, f)))
     .ok_or_else(|| {
         RunError::NotDocker(
             "This lab runs neither as containers nor as local VMs: export it and run it with \
@@ -59,8 +59,8 @@ pub fn prepare(dir: &Path, yaml: &str, own: &[(String, String)]) -> Result<Spec,
 
 /// The spec in `yaml`, when Isoloom finds no problem in it.
 fn valid_spec(yaml: &str) -> Result<Spec, RunError> {
-    let spec = isoloom_core::parse(yaml).map_err(|e| RunError::Spec(e.to_string()))?;
-    let problems = isoloom_core::validate(&spec);
+    let spec = isoloom_spec::parse(yaml).map_err(|e| RunError::Spec(e.to_string()))?;
+    let problems = isoloom_spec::validate(&spec);
     if problems.is_empty() {
         return Ok(spec);
     }
@@ -165,7 +165,7 @@ machines:
 
     #[test]
     fn a_lab_with_vms_runs_with_vagrant() {
-        let spec = isoloom_core::parse(WITH_VM).unwrap();
+        let spec = isoloom_spec::parse(WITH_VM).unwrap();
         let (rt, files) = generated(&spec).unwrap();
         assert_eq!(rt, Runtime::Hybrid);
         assert!(
@@ -177,7 +177,7 @@ machines:
             "    docker: { image: \"alpine:3.20\" }\n",
             "    vm: { os: debian-12 }\n",
         );
-        let (rt, _) = generated(&isoloom_core::parse(&only_vm).unwrap()).unwrap();
+        let (rt, _) = generated(&isoloom_spec::parse(&only_vm).unwrap()).unwrap();
         assert_eq!(rt, Runtime::Vagrant);
         // Prepared: the runtime is recorded and the Vagrantfile found (when Vagrant is installed).
         let dir = temp("vm");
