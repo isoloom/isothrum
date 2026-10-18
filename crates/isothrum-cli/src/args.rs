@@ -1,0 +1,250 @@
+//! The command line's grammar.
+
+use std::path::PathBuf;
+
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+/// Runs what Isoloom generates: the run manifest next to a target's files
+/// (`<run>/.isoloom/<target>/run.json`).
+#[derive(Debug, Parser)]
+#[command(name = "isothrum", version, about)]
+pub(crate) struct Cli {
+    /// What to do.
+    #[command(subcommand)]
+    pub(crate) command: Command,
+    /// The runner's home, where runs are recorded (default: `$ISOTHRUM_HOME`, else `~/.isothrum`).
+    #[arg(long, global = true, value_name = "DIR")]
+    pub(crate) home: Option<PathBuf>,
+    /// Print the events as JSON, one per line, on standard output.
+    #[arg(long, global = true)]
+    pub(crate) json: bool,
+}
+
+/// The operations.
+#[derive(Debug, Subcommand)]
+pub(crate) enum Command {
+    /// Start the run (a parked run is resumed; leftovers are removed first).
+    Up {
+        #[command(flatten)]
+        op: OpArgs,
+        /// Remove whatever of the run exists, then start afresh.
+        #[arg(long)]
+        replace: bool,
+        /// How long a run that stops itself (a cloud run) may live, in minutes (default: its
+        /// manifest's).
+        #[arg(long, value_name = "MINUTES")]
+        lifetime: Option<u64>,
+    },
+    /// Remove everything the run created.
+    Down(OpArgs),
+    /// Stop the run, keeping what it created.
+    Park {
+        #[command(flatten)]
+        run: TargetArgs,
+        /// `pause` or `shutdown`.
+        #[arg(long, value_enum, default_value_t = Mode::Shutdown)]
+        mode: Mode,
+    },
+    /// Start a parked run again.
+    Resume(OpArgs),
+    /// Show the run: its state, machines, outputs and message.
+    Status(TargetArgs),
+    /// Run the run's checks (exit 1 when one fails).
+    Check(OpArgs),
+    /// Run the set-up again on the running machines (a VM run's provisioners).
+    Provision {
+        #[command(flatten)]
+        op: OpArgs,
+        /// Only this machine.
+        #[arg(long)]
+        machine: Option<String>,
+    },
+    /// Hot-add the on-demand access machine (the attacker box) into the running run.
+    Attach {
+        #[command(flatten)]
+        run: TargetArgs,
+        /// Which on-demand machine, when the lab has more than one (default: its only one).
+        #[arg(long)]
+        machine: Option<String>,
+        /// The lab network to attach it to (default: its first).
+        #[arg(long)]
+        network: Option<String>,
+        /// The image (Docker) or box (Vagrant) to run it from (default: the lab's).
+        #[arg(long)]
+        image: Option<String>,
+    },
+    /// Hot-remove the on-demand access machine from the running run.
+    Detach {
+        #[command(flatten)]
+        run: TargetArgs,
+        /// Which on-demand machine, when the lab has more than one (default: its only one).
+        #[arg(long)]
+        machine: Option<String>,
+    },
+    /// Print the command that opens an interactive shell into the on-demand access machine.
+    Shell {
+        #[command(flatten)]
+        run: TargetArgs,
+        /// Which on-demand machine, when the lab has more than one (default: its only one).
+        #[arg(long)]
+        machine: Option<String>,
+    },
+    /// Print the run's recorded events, oldest first.
+    Events(TargetArgs),
+    /// Destroy a cloud's runs past their expiry (each with the params it was applied with), then
+    /// list what the cloud still holds past its expiry that no run records. Exit 1 when a destroy
+    /// failed or something is left.
+    Reap(ReapArgs),
+    /// Print the runner's SSH public key (made when it has none): authorize it where a run's SSH
+    /// goes through (a Proxmox node, with `--ssh-jump`).
+    Key,
+}
+
+/// A cloud.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CloudName {
+    /// Amazon Web Services.
+    Aws,
+    /// Microsoft Azure.
+    Azure,
+    /// Google Cloud.
+    Gcp,
+    /// DigitalOcean.
+    Digitalocean,
+    /// Akamai Linode.
+    Linode,
+    /// Oracle Cloud Infrastructure.
+    Oci,
+}
+
+impl CloudName {
+    /// As the command line writes it (`digitalocean`).
+    pub(crate) fn id(self) -> String {
+        self.to_possible_value().map(|v| v.get_name().to_owned()).unwrap_or_default()
+    }
+}
+
+impl From<CloudName> for isothrum_runner::isoloom_manifest::Cloud {
+    fn from(c: CloudName) -> Self {
+        use isothrum_runner::isoloom_manifest::Cloud;
+        match c {
+            CloudName::Aws => Cloud::Aws,
+            CloudName::Azure => Cloud::Azure,
+            CloudName::Gcp => Cloud::Gcp,
+            CloudName::Digitalocean => Cloud::Digitalocean,
+            CloudName::Linode => Cloud::Linode,
+            CloudName::Oci => Cloud::Oci,
+        }
+    }
+}
+
+/// What `reap` sweeps.
+#[derive(Debug, Args)]
+pub(crate) struct ReapArgs {
+    /// The cloud.
+    #[arg(value_enum)]
+    pub(crate) cloud: CloudName,
+    /// Say what would be destroyed, destroying nothing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+    /// An AWS region to look for leftovers in (repeatable; default: the AWS command line's).
+    #[arg(long = "region", value_name = "REGION")]
+    pub(crate) regions: Vec<String>,
+    /// The Google Cloud project to look for leftovers in (default: gcloud's).
+    #[arg(long, value_name = "PROJECT")]
+    pub(crate) project: Option<String>,
+    /// A connection slot's value (the account's keys), read from an environment variable
+    /// (default: the slot's own name). Repeatable. Values never go on the command line.
+    #[arg(long = "secret-from-env", value_name = "NAME[=VAR]")]
+    pub(crate) secrets: Vec<String>,
+}
+
+/// How a run is parked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Mode {
+    /// Suspended where the target can.
+    Pause,
+    /// Shut down.
+    Shutdown,
+}
+
+/// Which run.
+#[derive(Debug, Args)]
+pub(crate) struct TargetArgs {
+    /// The run's folder (its `.isoloom/<target>/run.json` is read), or a run.json.
+    #[arg(default_value = ".")]
+    pub(crate) path: PathBuf,
+    /// The target whose manifest to run, when the run was generated for several.
+    #[arg(long)]
+    pub(crate) target: Option<String>,
+    /// The run's name (default: the run's name).
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+}
+
+/// Which run, and the values an operation runs with.
+#[derive(Debug, Args)]
+pub(crate) struct OpArgs {
+    #[command(flatten)]
+    pub(crate) run: TargetArgs,
+    /// A param's value (repeatable).
+    #[arg(long = "param", value_name = "NAME=VALUE")]
+    pub(crate) params: Vec<String>,
+    /// A secret or input slot's value, read from an environment variable (default: the slot's
+    /// own name). Repeatable. Values never go on the command line.
+    #[arg(long = "secret-from-env", value_name = "NAME[=VAR]")]
+    pub(crate) secrets: Vec<String>,
+    /// What to call the place the run is on (recorded; a later operation elsewhere is refused).
+    #[arg(long, value_name = "LABEL")]
+    pub(crate) host_label: Option<String>,
+    /// The Vagrant provider a VM run runs on (`virtualbox`, `libvirt`, `hyperv`, …); a run keeps
+    /// the one it was started with.
+    #[arg(long, value_name = "PROVIDER")]
+    pub(crate) provider: Option<String>,
+    /// A login (`user@host`) the run's SSH goes through first: a Proxmox node whose run bridge
+    /// this machine can't route to. Recorded at `up`.
+    #[arg(long, value_name = "USER@HOST")]
+    pub(crate) ssh_jump: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    #[test]
+    fn the_grammar_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn options_parse_after_the_lab() {
+        let cli = Cli::parse_from([
+            "isothrum",
+            "up",
+            "labs/flag",
+            "--param",
+            "ISOLOOM_PUBLISH_FIXED=1",
+            "--secret-from-env",
+            "CTF_FLAG_MAIN",
+            "--provider",
+            "virtualbox",
+            "--json",
+        ]);
+        let Command::Up { op, replace, .. } = cli.command else { panic!("{cli:?}") };
+        assert_eq!(op.provider.as_deref(), Some("virtualbox"));
+        assert_eq!(
+            (op.run.path, op.params, op.secrets, replace, cli.json),
+            (
+                "labs/flag".into(),
+                vec!["ISOLOOM_PUBLISH_FIXED=1".to_owned()],
+                vec!["CTF_FLAG_MAIN".to_owned()],
+                false,
+                true
+            )
+        );
+        let park = Cli::parse_from(["isothrum", "park", "--mode", "pause", "--home", "/tmp/h"]);
+        assert!(matches!(park.command, Command::Park { mode: Mode::Pause, .. }) && park.home == Some("/tmp/h".into()));
+    }
+}

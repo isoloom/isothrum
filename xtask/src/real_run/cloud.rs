@@ -1,0 +1,167 @@
+//! `real-run cloud <cloud>`: an Isoloom example (solo-web) on a real cloud account through the
+//! runner's command line: up, status, check, down, then `reap`, on a budget (the cloud's
+//! smallest size where the module takes one, a short life the cloud itself enforces, the
+//! firewall open to this machine only, a wall-clock budget after which nothing more starts) and
+//! with the destroy run whatever happened. A phase already running is never killed: a Terraform
+//! cut short loses what it created from its state, which no destroy then removes; each step has
+//! its own time limit in the manifest. It refuses to start without the account's credentials in
+//! the environment and never runs in the tests: [`account()`], [`phases()`] and [`execute`] are the
+//! plan, tested on fakes; [`run`] is the shell around them.
+
+mod account;
+mod phases;
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant};
+
+pub(crate) use account::{Account, account};
+pub(crate) use phases::{Ran, Runs, execute, phases};
+
+use crate::{Res, process, repo};
+
+/// A cloud.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum CloudName {
+    /// Amazon Web Services.
+    Aws,
+    /// Microsoft Azure.
+    Azure,
+    /// Google Cloud.
+    Gcp,
+    /// DigitalOcean.
+    Digitalocean,
+    /// Akamai Linode.
+    Linode,
+    /// Oracle Cloud Infrastructure.
+    Oci,
+}
+
+impl CloudName {
+    /// As Isoloom's folders and the runner's command line name it (`digitalocean`).
+    pub(crate) fn id(self) -> String {
+        clap::ValueEnum::to_possible_value(&self).map(|v| v.get_name().to_owned()).unwrap_or_default()
+    }
+
+    /// Its smallest machine size, as the modules' size variables take it.
+    pub(crate) fn smallest(self) -> &'static str {
+        match self {
+            CloudName::Aws => "t3.micro",
+            CloudName::Azure => "Standard_B1s",
+            CloudName::Gcp => "e2-micro",
+            CloudName::Digitalocean => "s-1vcpu-1gb",
+            CloudName::Linode => "g6-nanode-1",
+            CloudName::Oci => "VM.Standard.E2.1.Micro",
+        }
+    }
+}
+
+/// The cloud target run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum CloudTarget {
+    /// One cloud VM per machine.
+    CloudVm,
+    /// Docker Compose on one cloud VM.
+    CloudDocker,
+}
+
+impl CloudTarget {
+    /// As Isoloom names it.
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            CloudTarget::CloudVm => "cloud-vm",
+            CloudTarget::CloudDocker => "cloud-docker",
+        }
+    }
+}
+
+/// The arguments of `real-run cloud`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct CloudArgs {
+    /// The cloud whose account the environment's credentials open.
+    #[arg(value_enum)]
+    pub(crate) cloud: CloudName,
+    /// The target.
+    #[arg(long, value_enum, default_value_t = CloudTarget::CloudVm)]
+    pub(crate) target: CloudTarget,
+    /// The Isoloom example.
+    #[arg(long, default_value = "solo-web")]
+    pub(crate) example: String,
+    /// How long up, status and check may take together, in minutes: after it nothing more
+    /// starts but the destroy.
+    #[arg(long, default_value_t = 45)]
+    pub(crate) budget_minutes: u64,
+    /// How long the lab may live before the cloud's own guard (and the reaper) ends it, in minutes.
+    #[arg(long, default_value_t = 60)]
+    pub(crate) lifetime_minutes: u64,
+    /// This host, as `cargo xtask tiers record` names it (mac, jarvis, karen, friday).
+    #[arg(long, default_value = "mac")]
+    pub(crate) host: String,
+}
+
+/// The run's name, its own so it never meets a lab started by hand.
+pub(crate) const NAME: &str = "isothrum-real-run";
+
+/// Runs `a` with the Isoloom checkout `isoloom`: refused without credentials; else the example
+/// generated, then each phase, the destroy whatever happened.
+pub(crate) fn run(a: &CloudArgs, isoloom: &Path) -> Res<()> {
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let home_dir = std::env::home_dir();
+    let exists = |p: &Path| p.exists();
+    let account = account(a.cloud, &var, &exists, home_dir.as_deref())
+        .map_err(|missing| format!("no {} credentials in the environment: {}", a.cloud.id(), missing.join("; ")))?;
+    let root = repo::root();
+    let out = root.join("target").join("real-run").join(format!("{}-{}", a.target.id(), a.cloud.id()));
+    let lab = out.join(&a.example);
+    repo::remove(&lab)?;
+    repo::copy_dir(&isoloom.join("examples").join(&a.example), &lab).map_err(|e| format!("copying the example: {e}"))?;
+    let isoloom_bin = super::build_isoloom(&root, isoloom)?;
+    process::run(Command::new(isoloom_bin).args(["generate", "--target", a.target.id()]).current_dir(&lab))?;
+    let manifest = lab.join(".isoloom").join(a.target.id()).join(a.cloud.id()).join("run.json");
+    let declared = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let cidr = match var("ALLOWED_CIDR") {
+        Some(c) => c,
+        None => format!("{}/32", account::public_ip()?),
+    };
+    let bin = build_isothrum(&root)?;
+    let plan = phases(a, &account, &declared, &cidr, (&lab, &out.join("home")))?;
+    let started = Instant::now();
+    let outcome = execute(&plan, Duration::from_secs(a.budget_minutes * 60), &mut Real { bin }, &|| started.elapsed());
+    for (phase, ran) in &outcome {
+        println!("real-run: {:<6} {ran:?}", phase.step.name());
+    }
+    if outcome.iter().all(|(_, r)| *r == Ran::Ok) {
+        println!(
+            "real-run: passed. Record it in Isoloom:\n  cargo xtask tiers record {}/{} {} pass --note \"{}: up, status, check, down and reap through the Isothrum runner\"",
+            a.target.id(),
+            a.cloud.id(),
+            a.host,
+            a.example
+        );
+        Ok(())
+    } else {
+        Err("the real run failed (the lab was destroyed; see the phases above)".into())
+    }
+}
+
+/// Builds the runner's command line; its path.
+fn build_isothrum(root: &Path) -> Res<PathBuf> {
+    process::run(process::cargo(root).args(["build", "-p", "isothrum-cli"]))?;
+    Ok(repo::target_dir(root)
+        .join("debug")
+        .join(if cfg!(windows) { "isothrum.exe" } else { "isothrum" }))
+}
+
+/// The runner's command line, run for real.
+struct Real {
+    bin: PathBuf,
+}
+
+impl Runs for Real {
+    fn run(&mut self, args: &[String]) -> Ran {
+        match Command::new(&self.bin).args(args).status() {
+            Ok(status) if status.success() => Ran::Ok,
+            _ => Ran::Failed,
+        }
+    }
+}

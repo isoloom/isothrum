@@ -1,0 +1,6 @@
+# typos (a gate of Isoloom's `cargo xtask check-all --repos isothrum`): words that are right here
+# although they look like misspellings.
+
+[default.extend-words]
+# whoami's output format option (`whoami /groups /fo csv /nh`).
+fo = "fo"

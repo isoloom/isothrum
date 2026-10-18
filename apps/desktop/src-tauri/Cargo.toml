@@ -1,0 +1,30 @@
+[package]
+name = "isothrum-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+# Its own workspace: GTK/WebKit are needed here only.
+[workspace]
+
+[lib]
+name = "isothrum_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Isoloom at the commit the libraries pin (the root Cargo.toml): the spec the editor's compiler
+# writes, the lab it lowers to and the files each target generates.
+isoloom-spec = { git = "https://github.com/isoloom/isoloom", rev = "690d585efdff4f5b9c78f2af65383b807d0a654a" }
+isoloom-targets = { git = "https://github.com/isoloom/isoloom", rev = "690d585efdff4f5b9c78f2af65383b807d0a654a" }
+tauri-plugin-updater = "2"
+
+[dev-dependencies]
+# The tests run what the editor's compiler writes.
+isothrum-compiler = { path = "../../../crates/isothrum-compiler" }

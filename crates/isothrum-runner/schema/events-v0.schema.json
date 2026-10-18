@@ -1,0 +1,670 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Isothrum runner event, version 0",
+  "description": "One event of an operation.",
+  "type": "object",
+  "properties": {
+    "v": {
+      "description": "The stream's version ([`EVENTS_VERSION`]).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "seq": {
+      "description": "Its place in the operation, from 1.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "time": {
+      "description": "When (`YYYY-MM-DDTHH:MM:SSZ`, UTC).",
+      "type": "string"
+    },
+    "run": {
+      "description": "The run's name.",
+      "type": "string"
+    },
+    "op": {
+      "description": "The operation.",
+      "$ref": "#/$defs/Op"
+    }
+  },
+  "required": [
+    "v",
+    "seq",
+    "time",
+    "run",
+    "op"
+  ],
+  "oneOf": [
+    {
+      "description": "The run moved from one state to another.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Before.",
+          "$ref": "#/$defs/RunState"
+        },
+        "to": {
+          "description": "After.",
+          "$ref": "#/$defs/RunState"
+        },
+        "event": {
+          "type": "string",
+          "const": "state"
+        }
+      },
+      "required": [
+        "event",
+        "from",
+        "to"
+      ]
+    },
+    {
+      "description": "A step started, finished, failed or was skipped.",
+      "type": "object",
+      "properties": {
+        "step": {
+          "description": "The step's id.",
+          "type": "string"
+        },
+        "state": {
+          "description": "Where it stands.",
+          "$ref": "#/$defs/StepState"
+        },
+        "note": {
+          "description": "The manifest's line for it, when it starts.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "type": "string",
+          "const": "step"
+        }
+      },
+      "required": [
+        "event",
+        "step",
+        "state"
+      ]
+    },
+    {
+      "description": "A line a step's tool printed.",
+      "type": "object",
+      "properties": {
+        "step": {
+          "description": "The step's id.",
+          "type": "string"
+        },
+        "stream": {
+          "description": "Which output.",
+          "$ref": "#/$defs/Stream"
+        },
+        "line": {
+          "description": "The line, without its line break.",
+          "type": "string"
+        },
+        "event": {
+          "type": "string",
+          "const": "log"
+        }
+      },
+      "required": [
+        "event",
+        "step",
+        "stream",
+        "line"
+      ]
+    },
+    {
+      "description": "A ready condition was checked.",
+      "type": "object",
+      "properties": {
+        "condition": {
+          "description": "The condition (`step_ok up`).",
+          "type": "string"
+        },
+        "state": {
+          "description": "Where it stands.",
+          "$ref": "#/$defs/ReadyState"
+        },
+        "detail": {
+          "description": "What was seen.",
+          "type": "string"
+        },
+        "event": {
+          "type": "string",
+          "const": "ready"
+        }
+      },
+      "required": [
+        "event",
+        "condition",
+        "state",
+        "detail"
+      ]
+    },
+    {
+      "description": "An output's value, once the run is up.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "The output's name.",
+          "type": "string"
+        },
+        "role": {
+          "description": "What it is for.",
+          "$ref": "#/$defs/OutputRole"
+        },
+        "value": {
+          "description": "Its value (`***` when sensitive), or null when it can't be read.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sensitive": {
+          "description": "Whether the value is sensitive.",
+          "type": "boolean"
+        },
+        "event": {
+          "type": "string",
+          "const": "output"
+        }
+      },
+      "required": [
+        "event",
+        "name",
+        "role",
+        "sensitive"
+      ]
+    },
+    {
+      "description": "One check's result.",
+      "type": "object",
+      "properties": {
+        "runner": {
+          "description": "The check runner's id.",
+          "type": "string"
+        },
+        "from": {
+          "description": "Where it ran from.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The check's name.",
+          "type": "string"
+        },
+        "ok": {
+          "description": "Whether it passed.",
+          "type": "boolean"
+        },
+        "detail": {
+          "description": "Why it failed (empty when it passed).",
+          "type": "string"
+        },
+        "event": {
+          "type": "string",
+          "const": "check"
+        }
+      },
+      "required": [
+        "event",
+        "runner",
+        "from",
+        "name",
+        "ok",
+        "detail"
+      ]
+    },
+    {
+      "description": "Something the embedder may show, that didn't fail the operation.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "What kind.",
+          "$ref": "#/$defs/WarningCode"
+        },
+        "message": {
+          "description": "The text.",
+          "type": "string"
+        },
+        "event": {
+          "type": "string",
+          "const": "warning"
+        }
+      },
+      "required": [
+        "event",
+        "code",
+        "message"
+      ]
+    },
+    {
+      "description": "The operation's outcome, when it ran to its end.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "description": "Whether it reached its goal (false: a check failed).",
+          "type": "boolean"
+        },
+        "data": {
+          "description": "What it found or produced."
+        },
+        "event": {
+          "type": "string",
+          "const": "result"
+        }
+      },
+      "required": [
+        "event",
+        "ok",
+        "data"
+      ]
+    },
+    {
+      "description": "Why the operation failed.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "The stable code.",
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "description": "The message.",
+          "type": "string"
+        },
+        "step": {
+          "description": "The step that failed, when one did.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "type": "string",
+          "const": "error"
+        }
+      },
+      "required": [
+        "event",
+        "code",
+        "message"
+      ]
+    }
+  ],
+  "$defs": {
+    "Op": {
+      "description": "An operation on a run.",
+      "oneOf": [
+        {
+          "description": "Start the run.",
+          "type": "string",
+          "const": "up"
+        },
+        {
+          "description": "Remove everything the run created.",
+          "type": "string",
+          "const": "down"
+        },
+        {
+          "description": "Stop the run, keeping what it created.",
+          "type": "string",
+          "const": "park"
+        },
+        {
+          "description": "Start a parked run again.",
+          "type": "string",
+          "const": "resume"
+        },
+        {
+          "description": "Run the run's checks.",
+          "type": "string",
+          "const": "check"
+        },
+        {
+          "description": "Run the set-up again on running machines.",
+          "type": "string",
+          "const": "provision"
+        },
+        {
+          "description": "Hot-add the on-demand access machine into the running run.",
+          "type": "string",
+          "const": "attach"
+        },
+        {
+          "description": "Hot-remove the on-demand access machine from the running run.",
+          "type": "string",
+          "const": "detach"
+        }
+      ]
+    },
+    "RunState": {
+      "description": "Where a run stands.",
+      "oneOf": [
+        {
+          "description": "Being started.",
+          "type": "string",
+          "const": "starting"
+        },
+        {
+          "description": "Up, every target machine running.",
+          "type": "string",
+          "const": "ready"
+        },
+        {
+          "description": "Something of it exists, but not every target machine runs (a failed start, a machine down).",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "Being parked.",
+          "type": "string",
+          "const": "parking"
+        },
+        {
+          "description": "Parked: stopped, what it created kept.",
+          "type": "string",
+          "const": "parked"
+        },
+        {
+          "description": "Being resumed.",
+          "type": "string",
+          "const": "resuming"
+        },
+        {
+          "description": "Being removed.",
+          "type": "string",
+          "const": "stopping"
+        },
+        {
+          "description": "Nothing of it exists.",
+          "type": "string",
+          "const": "absent"
+        }
+      ]
+    },
+    "StepState": {
+      "description": "Where a step stands.",
+      "oneOf": [
+        {
+          "description": "Started.",
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "description": "Finished and succeeded.",
+          "type": "string",
+          "const": "done"
+        },
+        {
+          "description": "Finished and failed (an `error` follows unless the step's failure is tolerated).",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "Not run: an earlier step failed.",
+          "type": "string",
+          "const": "skipped"
+        }
+      ]
+    },
+    "Stream": {
+      "description": "Which output of a tool a line came from.",
+      "oneOf": [
+        {
+          "description": "Its standard output.",
+          "type": "string",
+          "const": "stdout"
+        },
+        {
+          "description": "Its standard error.",
+          "type": "string",
+          "const": "stderr"
+        }
+      ]
+    },
+    "ReadyState": {
+      "description": "Where a ready condition stands.",
+      "oneOf": [
+        {
+          "description": "Not yet; polled again.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "It holds.",
+          "type": "string",
+          "const": "ok"
+        },
+        {
+          "description": "It didn't hold in time.",
+          "type": "string",
+          "const": "failed"
+        }
+      ]
+    },
+    "OutputRole": {
+      "description": "What the embedder does with an output.",
+      "oneOf": [
+        {
+          "description": "Where to start: the Open button.",
+          "type": "string",
+          "const": "entry"
+        },
+        {
+          "description": "The lab host's login.",
+          "type": "string",
+          "const": "ssh"
+        },
+        {
+          "description": "An address.",
+          "type": "string",
+          "const": "address"
+        },
+        {
+          "description": "A credential.",
+          "type": "string",
+          "const": "credential"
+        },
+        {
+          "description": "Anything else worth showing.",
+          "type": "string",
+          "const": "info"
+        }
+      ]
+    },
+    "WarningCode": {
+      "description": "What kind of warning a `warning` event is, the same in the Rust API and the event stream.",
+      "oneOf": [
+        {
+          "description": "A step whose failure the manifest tolerates failed.",
+          "type": "string",
+          "const": "step_tolerated"
+        },
+        {
+          "description": "An embedder's hook failed.",
+          "type": "string",
+          "const": "hook_failed"
+        },
+        {
+          "description": "A check runner failed or ran out of time: its checks that didn't report fail.",
+          "type": "string",
+          "const": "check_runner_failed"
+        },
+        {
+          "description": "The clean-up of a check runner that ran out of time failed.",
+          "type": "string",
+          "const": "check_cleanup_failed"
+        },
+        {
+          "description": "What an earlier run left is removed before a start.",
+          "type": "string",
+          "const": "leftovers_removed"
+        },
+        {
+          "description": "A VM (or its folder) an earlier run left is removed.",
+          "type": "string",
+          "const": "orphan_removed"
+        },
+        {
+          "description": "The run last ran on another Vagrant provider: that run is cleared first.",
+          "type": "string",
+          "const": "other_provider"
+        },
+        {
+          "description": "A VM's saved state was cut off: it boots fresh.",
+          "type": "string",
+          "const": "saved_state_discarded"
+        },
+        {
+          "description": "A start failed on stale state: cleared, then started again.",
+          "type": "string",
+          "const": "recovering"
+        },
+        {
+          "description": "An apply failed and is tried again.",
+          "type": "string",
+          "const": "retrying"
+        }
+      ]
+    },
+    "ErrorCode": {
+      "description": "The stable code of a failure, the same in the Rust API and the event stream (`error.code`).",
+      "oneOf": [
+        {
+          "description": "The manifest isn't valid JSON or breaks the contract.",
+          "type": "string",
+          "const": "manifest_invalid"
+        },
+        {
+          "description": "The manifest is another version of the contract.",
+          "type": "string",
+          "const": "manifest_version"
+        },
+        {
+          "description": "The manifest needs something this runner doesn't do yet (a driver, a delivery, a condition).",
+          "type": "string",
+          "const": "unsupported"
+        },
+        {
+          "description": "A file or folder couldn't be read or written.",
+          "type": "string",
+          "const": "io"
+        },
+        {
+          "description": "Another process runs an operation on this run.",
+          "type": "string",
+          "const": "locked"
+        },
+        {
+          "description": "A tool a step runs isn't installed.",
+          "type": "string",
+          "const": "tool_missing"
+        },
+        {
+          "description": "A step's tool ran and failed.",
+          "type": "string",
+          "const": "tool_failed"
+        },
+        {
+          "description": "A tool answers at a version older than the run needs.",
+          "type": "string",
+          "const": "tool_too_old"
+        },
+        {
+          "description": "A step ran out of time and was stopped, with what it started.",
+          "type": "string",
+          "const": "timeout"
+        },
+        {
+          "description": "The run is already up.",
+          "type": "string",
+          "const": "already_running"
+        },
+        {
+          "description": "The run is recorded on another place (server or account) than the one asked for.",
+          "type": "string",
+          "const": "running_elsewhere"
+        },
+        {
+          "description": "A host port the run publishes is taken.",
+          "type": "string",
+          "const": "port_in_use"
+        },
+        {
+          "description": "The manifest has no park steps for that mode.",
+          "type": "string",
+          "const": "not_parkable"
+        },
+        {
+          "description": "Nothing of the run is left to resume.",
+          "type": "string",
+          "const": "nothing_to_resume"
+        },
+        {
+          "description": "The run isn't up.",
+          "type": "string",
+          "const": "not_running"
+        },
+        {
+          "description": "A ready condition didn't hold.",
+          "type": "string",
+          "const": "not_ready"
+        },
+        {
+          "description": "A required secret or input has no value.",
+          "type": "string",
+          "const": "secret_missing"
+        },
+        {
+          "description": "A param is unknown, missing or holds a value it doesn't allow.",
+          "type": "string",
+          "const": "param_invalid"
+        },
+        {
+          "description": "A run name that can't name a run.",
+          "type": "string",
+          "const": "run_name"
+        },
+        {
+          "description": "The run's Vagrant provider is missing, unknown, not on this host, refused by the run, or\nlacks its plugin.",
+          "type": "string",
+          "const": "provider_refused"
+        },
+        {
+          "description": "The elevation Hyper-V's commands need couldn't be had (the permission prompt declined).",
+          "type": "string",
+          "const": "elevation_declined"
+        },
+        {
+          "description": "A machine the run doesn't have.",
+          "type": "string",
+          "const": "machine_unknown"
+        },
+        {
+          "description": "Every slot of the place is held by another run.",
+          "type": "string",
+          "const": "slots_full"
+        },
+        {
+          "description": "A deployment can't be taken over as a run.",
+          "type": "string",
+          "const": "adopt_refused"
+        },
+        {
+          "description": "A machine a step goes to over SSH never answered.",
+          "type": "string",
+          "const": "unreachable"
+        },
+        {
+          "description": "The run's seal failed: it is up, but not sealed, so not ready.",
+          "type": "string",
+          "const": "not_sealed"
+        }
+      ]
+    }
+  }
+}

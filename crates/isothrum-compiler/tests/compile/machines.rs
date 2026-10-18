@@ -1,0 +1,101 @@
+//! Machines: what each kind of node becomes, its steps and its ports.
+
+use isoloom_spec::syntax::Recipe;
+
+use crate::testing::{Outcome, accepted, container, three_node, vm};
+
+#[test]
+fn a_container_is_an_app_from_its_image_and_a_vm_its_os_and_steps() -> Outcome {
+    let c = accepted(&three_node()?)?;
+    let client = &c.spec().machines["client"];
+    assert!(client.access);
+    assert_eq!(client.os.map(|os| os.to_string()).as_deref(), Some("debian@12"));
+    assert_eq!(client.app().map(|app| app.steps.len()), Some(1));
+    let router = c.spec().machines["router"].app();
+    assert_eq!(router.and_then(|r| r.container.clone()), Some(Recipe::Image("frrouting/frr:v8.5.2".into())));
+    assert!(c.spec().machines["router"].os.is_none());
+    Ok(())
+}
+
+#[test]
+fn the_yaml_is_the_new_format_with_defaults_left_out() -> Outcome {
+    let yaml = accepted(&three_node()?)?.into_parts().0;
+    for old in ["docker:", "vm:", "services:", "idle", "provision:", "null", "[]", "{}", "privileged", "arch"] {
+        assert!(!yaml.contains(old), "`{old}` in:\n{yaml}");
+    }
+    assert!(yaml.contains("internet: false"), "{yaml}");
+    assert!(yaml.contains("access: true"), "{yaml}");
+    assert!(yaml.contains("steps:\n      - run: provision/x.sh"), "{yaml}");
+    Ok(())
+}
+
+#[test]
+fn an_idle_container_is_kept_running_by_its_own_command() -> Outcome {
+    let mut topo = three_node()?;
+    topo.nodes["router"].kind = container("alpine:3.20", true);
+    let c = accepted(&topo)?;
+    assert!(c.yaml().contains("command:\n    - sleep\n    - infinity"), "{}", c.yaml());
+    assert!(c.spec().machines["router"].command.is_some());
+    Ok(())
+}
+
+#[test]
+fn a_vm_without_steps_is_its_os_alone_and_a_playbook_is_a_playbook_step() -> Outcome {
+    let mut topo = three_node()?;
+    topo.nodes["client"].kind = vm("kali", &[])?;
+    topo.nodes["server"].kind = vm("ubuntu@24.04", &["provision/web.sh", "provision/site.yml"])?;
+    let c = accepted(&topo)?;
+    assert!(c.spec().machines["client"].app().is_none());
+    assert!(
+        c.yaml().contains("- run: provision/web.sh\n      - playbook: provision/site.yml"),
+        "{}",
+        c.yaml()
+    );
+    Ok(())
+}
+
+#[test]
+fn ports_are_named_with_their_protocol() -> Outcome {
+    let mut topo = three_node()?;
+    topo.nodes["server"].services = serde_json::from_str(r#"[{ "port": 22 }, { "port": 443, "protocol": "https" }, { "port": 53, "protocol": "udp" }]"#)?;
+    let c = accepted(&topo)?;
+    assert!(
+        c.yaml().contains(
+            "ports:\n      ssh: 22\n      https:\n        port: 443\n        protocol: https\n      dns-udp:\n        port: 53\n        protocol: udp\n"
+        ),
+        "{}",
+        c.yaml()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_windows_vm_runs_its_powershell_steps_and_the_controller_its_playbooks() -> Outcome {
+    let mut topo = three_node()?;
+    topo.nodes["server"].kind = vm("windows-server@2022", &["provision/iis.ps1", "provision/domain.yml"])?;
+    let c = accepted(&topo)?;
+    assert!(
+        c.yaml()
+            .contains("os: windows-server@2022\n    app:\n      steps:\n      - run: provision/iis.ps1\n    networks:"),
+        "{}",
+        c.yaml()
+    );
+    assert!(c.yaml().ends_with("provision:\n- ansible: provision/domain.yml\n"), "{}", c.yaml());
+    let starter = c.files().iter().find(|f| f.path == "provision/domain.yml").ok_or("the playbook's starter")?;
+    assert!(starter.contents.contains("- hosts: server\n"), "{}", starter.contents);
+    Ok(())
+}
+
+#[test]
+fn a_windows_vm_with_only_playbooks_is_its_os_alone() -> Outcome {
+    let mut topo = three_node()?;
+    topo.nodes["server"].kind = vm("windows@11", &["provision/a.yml", "provision/b.yaml"])?;
+    let c = accepted(&topo)?;
+    assert!(c.spec().machines["server"].app().is_none(), "{}", c.yaml());
+    assert!(
+        c.yaml().ends_with("provision:\n- ansible: provision/a.yml\n- ansible: provision/b.yaml\n"),
+        "{}",
+        c.yaml()
+    );
+    Ok(())
+}

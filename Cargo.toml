@@ -1,0 +1,103 @@
+[workspace]
+resolver = "3"
+members = ["crates/isothrum-compiler", "crates/isothrum-wasm", "crates/isothrum-runner", "crates/isothrum-cli", "xtask"]
+# The desktop app is its own workspace: it needs GTK/WebKit, which the libraries do not. So are the
+# fuzz targets: they build with nightly and libFuzzer (`cargo run -p xtask -- fuzz`).
+exclude = ["apps/desktop/src-tauri", "fuzz"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/isoloom/isothrum"
+homepage = "https://www.isothrum.com"
+# Default-deny: a crate opts in with `publish = true`. xtask, the fuzz targets and the desktop
+# app stay unpublished.
+publish = false
+
+[workspace.dependencies]
+# Isoloom's published crates (crates.io), paired with this release: Isoloom 1.0.0 is live, so the
+# lockfile resolves these from the registry.
+isoloom-spec = "1.0.0"
+isoloom-targets = "1.0.0"
+isoloom-manifest = "1.0.0"
+isothrum-compiler = { path = "crates/isothrum-compiler", version = "1.0.0" }
+isothrum-runner = { path = "crates/isothrum-runner", version = "1.0.0" }
+indexmap = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+serde_json = "1"
+thiserror = "2"
+schemars = "1"
+sha2 = "0.10"
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "time", "sync", "net"] }
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-group", "job-object", "creation-flags"] }
+windows = { version = "0.62", features = ["Win32_System_Threading"] }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+proptest = { version = "1", default-features = false, features = ["std"] }
+insta = "1"
+wasm-bindgen = "0.2"
+wasm-bindgen-test = "0.3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+toml = "1"
+tar = "0.4"
+flate2 = "1"
+
+# Every crate inherits these (`[lints] workspace = true`): Isoloom's 1c set (PLAN 3b, 1c) and the
+# Rust practices of PLAN 3d, every one at "deny" now that each crate is at zero. A lint ever back at
+# "warn" is counted by `cargo run -p xtask -- quality` (the ratchet, `quality-baseline.json`),
+# which fails when a count goes up. An exception is a local `#[expect(lint, reason = "…")]`, never
+# an `#[allow]`.
+[workspace.lints.rust]
+# No exception: processes are grouped and killed through `process-wrap`, never raw FFI.
+unsafe_code = "forbid"
+unused = { level = "deny", priority = -1 }
+missing_docs = "deny"
+unreachable_pub = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+missing_crate_level_docs = "deny"
+bare_urls = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -2 }
+pedantic = { level = "deny", priority = -1 }
+doc_markdown = "deny"
+similar_names = "deny"
+# Limits (pedantic or nursery; thresholds in clippy.toml): functions 60 lines, 5 parameters,
+# cognitive complexity 15.
+too_many_lines = "deny"
+too_many_arguments = "deny"
+cognitive_complexity = "deny"
+fn_params_excessive_bools = "deny"
+struct_excessive_bools = "deny"
+# Exceptions carry a reason and fail once unneeded: `#[expect(lint, reason = "...")]`.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+undocumented_unsafe_blocks = "deny"
+# Restriction lints (tests may unwrap, expect, panic, print and index: see clippy.toml).
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+as_conversions = "deny"
+wildcard_imports = "deny"
+shadow_unrelated = "deny"
+let_underscore_must_use = "deny"
+clone_on_ref_ptr = "deny"
+rc_buffer = "deny"
+str_to_string = "deny"
+get_unwrap = "deny"

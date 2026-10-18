@@ -1,0 +1,123 @@
+//! What can be wrong with a drawing, said so the user knows what to fix: one enum for the crate.
+
+use isoloom_spec::syntax::Problems;
+
+use crate::cables::LINK_BLOCK;
+
+/// The crate's result.
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// Why a drawing doesn't compile.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum Error {
+    /// A cable names a node the project doesn't have.
+    #[error("link {link} refers to node `{node}`, which the project doesn't have")]
+    UnknownNode {
+        /// The cable's index.
+        link: usize,
+        /// The node it names.
+        node: String,
+    },
+    /// A cable runs from a node to itself.
+    #[error("link {link} cables `{node}` to itself")]
+    SelfLink {
+        /// The cable's index.
+        link: usize,
+        /// The node.
+        node: String,
+    },
+    /// Two cables share a port.
+    #[error("port `{port}` of `{node}` already has a cable")]
+    PortInUse {
+        /// The node.
+        node: String,
+        /// Its port.
+        port: String,
+    },
+    /// More cables than the cables' block holds.
+    #[error("{0} cables don't fit in {LINK_BLOCK}")]
+    TooManyLinks(usize),
+    /// A node is on a LAN the project doesn't have.
+    #[error("`{node}` is on LAN `{lan}`, which the project doesn't have")]
+    UnknownLan {
+        /// The node.
+        node: String,
+        /// The LAN it names.
+        lan: String,
+    },
+    /// A LAN's name is one the cables use (`link-<n>`).
+    #[error("`{0}` is a name the cables use; call the LAN something else")]
+    ReservedLanName(String),
+    /// A LAN's CIDR isn't `a.b.c.d/n`.
+    #[error("LAN `{lan}`: `{cidr}` isn't a block like 10.10.1.0/24")]
+    BadCidr {
+        /// The LAN.
+        lan: String,
+        /// Its block as drawn.
+        cidr: String,
+    },
+    /// Two nodes ask for the same address on a LAN.
+    #[error("on LAN `{lan}`, `{first}` and `{second}` both ask for .{octet}")]
+    AddressTaken {
+        /// The LAN.
+        lan: String,
+        /// The address's last octet.
+        octet: u8,
+        /// The node that asked first.
+        first: String,
+        /// The other one.
+        second: String,
+    },
+    /// A LAN has more machines than free addresses.
+    #[error("LAN `{lan}` ({cidr}) has no free address left; use a larger block")]
+    LanFull {
+        /// The LAN.
+        lan: String,
+        /// Its block.
+        cidr: String,
+    },
+    /// A switch has the name of a LAN: its VLANs nest under a LAN of that name in the spec.
+    #[error("switch `{switch}` has the name of a LAN; rename one of them")]
+    SwitchNameTaken {
+        /// The switch.
+        switch: String,
+    },
+    /// A port name the compiler made breaks Isoloom's rule (a bug: the names are generated).
+    #[error("the name of port {port} of `{node}`")]
+    PortName {
+        /// The node.
+        node: String,
+        /// The port.
+        port: u16,
+        /// Why the name was refused.
+        #[source]
+        source: isoloom_spec::Error,
+    },
+    /// The spec couldn't be written as YAML.
+    #[error("writing the spec")]
+    Yaml(#[source] serde_yaml_ng::Error),
+    /// Isoloom doesn't read the spec the compiler wrote (a bug: the compiler writes only what
+    /// Isoloom's format holds).
+    #[error("Isoloom doesn't read the compiled spec: {}", lines(.0))]
+    Unreadable(Problems),
+}
+
+/// The problems, on one line, separated by semicolons.
+fn lines(problems: &Problems) -> String {
+    problems.iter().map(isoloom_spec::syntax::Problem::line).collect::<Vec<_>>().join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_spec_isoloom_does_not_read_says_each_problem() {
+        let problems = isoloom_spec::syntax::parse("version: 1\nname: x\nmachines:\n  a:\n    networks: { lan: x }\n  b:\n    color: red\n").unwrap_err();
+        assert!(problems.len() >= 2, "{problems:?}");
+        let said = Error::Unreadable(problems.clone()).to_string();
+        let expected: Vec<String> = problems.iter().map(isoloom_spec::syntax::Problem::line).collect();
+        assert_eq!(said, format!("Isoloom doesn't read the compiled spec: {}", expected.join("; ")));
+    }
+}

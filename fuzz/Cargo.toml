@@ -1,0 +1,58 @@
+# The fuzz targets (cargo-fuzz, PLAN 3d), run by `cargo run -p xtask -- fuzz`. A workspace of its
+# own: they build with nightly and libFuzzer, which the main workspace's gates (stable, three
+# platforms) don't. Each crash a run finds becomes a regression test in the crate it belongs to.
+[package]
+name = "isothrum-fuzz"
+description = "Isothrum's fuzz targets: the compiler's drawing parser, the runner's placeholder filling and step planning."
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# The inputs each target starts from (folders, relative to this one), besides its own corpus.
+[package.metadata.seeds]
+drawing = ["../crates/isothrum-compiler/tests/fixtures"]
+placeholders = []
+plan = ["../crates/isothrum-runner/tests/fixtures"]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+isothrum-compiler = { path = "../crates/isothrum-compiler" }
+isothrum-runner = { path = "../crates/isothrum-runner", features = ["fuzzing"] }
+serde_json = "1"
+
+[lints.rust]
+missing_docs = "deny"
+unused = { level = "deny", priority = -1 }
+
+[lints.clippy]
+all = { level = "deny", priority = -2 }
+pedantic = { level = "deny", priority = -1 }
+
+[[bin]]
+name = "drawing"
+path = "fuzz_targets/drawing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "placeholders"
+path = "fuzz_targets/placeholders.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plan"
+path = "fuzz_targets/plan.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

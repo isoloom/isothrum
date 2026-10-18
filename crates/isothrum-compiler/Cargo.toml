@@ -1,0 +1,30 @@
+[package]
+name = "isothrum-compiler"
+description = "Isothrum's compiler: a lab drawn in the editor becomes an Isoloom spec."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/isothrum-compiler"
+keywords = ["isothrum", "isoloom", "network", "lab", "compiler"]
+categories = ["compilers", "network-programming"]
+exclude = ["tests/", "rustfmt.toml"]
+publish = true
+
+[dependencies]
+isoloom-spec.workspace = true
+indexmap.workspace = true
+serde.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+isoloom-targets.workspace = true
+insta.workspace = true
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

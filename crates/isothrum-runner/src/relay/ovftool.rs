@@ -1,0 +1,70 @@
+//! The `ovftool` wrapper: vagrant-vmware-esxi uploads VMs with ovftool to a `vi://` URL it builds
+//! from the host name alone, so the wrapper adds the HTTPS relay's port before running the real
+//! one. Ported from the launcher's `lan_relay/ovftool.rs`.
+
+use std::path::{Path, PathBuf};
+
+/// `ovftool` that adds the relay's port to a `vi://…@127.0.0.1` target (the plugin builds the URL
+/// from the host name alone, so it can't carry a port) and runs the real one.
+const WRAPPER: &str = r#"#!/bin/sh
+# Written by the Isothrum runner: sends ovftool's ESXi target through its loopback relay.
+n=$#; i=0
+while [ "$i" -lt "$n" ]; do
+  a=$1; shift
+  case "$a" in
+    vi://*@127.0.0.1*) a=$(printf '%s' "$a" | /usr/bin/sed -E "s#@127\.0\.0\.1(/|\$)#@127.0.0.1:${ISOTHRUM_OVFTOOL_PORT}\1#") ;;
+  esac
+  set -- "$@" "$a"; i=$((i + 1))
+done
+exec "$ISOTHRUM_REAL_OVFTOOL" "$@"
+"#;
+
+/// VMware's own ovftool, where Fusion installs it.
+const FUSION_OVFTOOL: &str = "/Applications/VMware Fusion.app/Contents/Library/VMware OVF Tool/ovftool";
+
+/// The ovftool the wrapper hands over to: the one on `path` (the run's `PATH`), else VMware
+/// Fusion's own.
+pub(super) fn real(path: Option<&str>) -> Option<String> {
+    let on_path = path.and_then(|p| std::env::split_paths(p).map(|d| d.join("ovftool")).find(|f| f.is_file()));
+    on_path
+        .or_else(|| Some(PathBuf::from(FUSION_OVFTOOL)).filter(|f| f.is_file()))
+        .map(|p| p.display().to_string())
+}
+
+/// A folder under `home` holding the wrapper as `ovftool` (written when missing or changed), to
+/// put first on `PATH`.
+pub(super) fn wrapper_dir(home: &Path) -> std::io::Result<PathBuf> {
+    let dir = home.join("relay");
+    crate::store::private_dir(&dir)?;
+    let f = dir.join("ovftool");
+    if std::fs::read_to_string(&f).ok().as_deref() != Some(WRAPPER) {
+        crate::store::write_private(&f, WRAPPER.as_bytes())?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wrapper_adds_the_relay_port_to_the_vi_target() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = wrapper_dir(home.path()).unwrap();
+        let out = std::process::Command::new(dir.join("ovftool"))
+            .args(["--noSSLVerify", "box.vmx", "vi://root:p%40ss@127.0.0.1/pool"])
+            .env("ISOTHRUM_OVFTOOL_PORT", "40443")
+            .env("ISOTHRUM_REAL_OVFTOOL", "/bin/echo")
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "--noSSLVerify box.vmx vi://root:p%40ss@127.0.0.1:40443/pool"
+        );
+    }
+}

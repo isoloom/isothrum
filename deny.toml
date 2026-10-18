@@ -1,0 +1,65 @@
+# cargo-deny (`cargo deny check`, a gate of Isoloom's `cargo xtask check-all --repos isothrum`): the
+# supply chain of PLAN 3d. Advisories, licences, bans (duplicate versions, wildcard requirements)
+# and sources (crates.io, and Isoloom's own repository).
+
+[graph]
+all-features = true
+
+[advisories]
+# A vulnerability always fails; so do an unmaintained or unsound crate anywhere in the graph. A
+# yanked version is reported (an update is due) without failing the build.
+unmaintained = "all"
+unsound = "all"
+yanked = "warn"
+ignore = [
+  # unsafe-libyaml (under serde_yaml_ng, Isoloom's YAML crate and the compiler's) is archived
+  # upstream: an "unmaintained" notice, with no known vulnerability. Isoloom ignores it for the same
+  # reason; drop this once the YAML parsing moves to a maintained crate.
+  { id = "RUSTSEC-2024-0449", reason = "unmaintained only (no vulnerability); used through serde_yaml_ng until the YAML crate is replaced" },
+  # The three zip 2.x extraction advisories (SUID/SGID preservation + symlink traversal in
+  # ZipArchive::extract). isothrum-wasm uses zip WRITE-ONLY (ZipWriter in bundle.rs builds the
+  # bundle); it never calls ZipArchive::extract/stream-extract, so none of these are reachable.
+  # The real fix is zip >= 9.0.0 (a major upgrade with write-API changes) — tracked for 1.x.
+  { id = "RUSTSEC-2026-0367", reason = "zip extraction vuln; isothrum-wasm is write-only (never extracts), not reachable; zip 9.x upgrade tracked for 1.x" },
+  { id = "RUSTSEC-2026-0368", reason = "zip extraction vuln; isothrum-wasm is write-only (never extracts), not reachable; zip 9.x upgrade tracked for 1.x" },
+  { id = "RUSTSEC-2026-0369", reason = "zip extraction vuln; isothrum-wasm is write-only (never extracts), not reachable; zip 9.x upgrade tracked for 1.x" },
+]
+
+[licenses]
+# Licences compatible with Apache-2.0, the workspace's: a new one is a decision, made by adding it
+# here.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSL-1.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# The workspace's own crates are Apache-2.0 (the workspace `license`) and `publish = false`.
+ignore = true
+
+[bans]
+# Two versions of one crate are reported, not refused (it is often a transitive lag), the
+# development dependencies' included. The ones reviewed are skipped below, each with its reason,
+# so a new one stands out; a skip that no longer matches is reported too.
+multiple-versions = "warn"
+multiple-versions-include-dev = true
+# A `*` requirement is refused; the workspace's own path dependencies aren't requirements.
+wildcards = "deny"
+allow-wildcard-paths = true
+skip = [
+  { crate = "cpufeatures@0.2.17", reason = "sha2 0.10 (the runner's digests) is on 0.2; proptest's chacha20 (a dev-dependency) is on 0.3" },
+  { crate = "syn@2.0.119", reason = "tracing-attributes, the windows crate's derives and zip's arbitrary derive are still on syn 2; the other derives are on 3" },
+]
+
+[sources]
+# crates.io, and Isoloom's crates from Isoloom's own repository (pinned by commit until they are
+# published to crates.io, PLAN 0): no other registry, no other git dependency.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/isoloom/isoloom"]

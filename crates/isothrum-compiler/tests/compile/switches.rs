@@ -1,0 +1,109 @@
+//! Switches: VLANs, Cisco switches and routers on them.
+
+use isothrum_compiler::{Compiled, Error, Lan, ProjectFile, Result, Topology, compile};
+
+use crate::testing::{Outcome, accepted, join, lan, octet, two_lans};
+
+/// A switch running a Cisco OS, as the editor sends it: a node of its own with no networks,
+/// named as the `device` of its VLANs; machines on its ports join the VLANs.
+#[test]
+fn a_cisco_switch_switches_its_vlans() -> Outcome {
+    let topo: Topology = serde_json::from_str(
+        r#"{
+          "name": "cisco-sw",
+          "nodes": {
+            "pc1": { "kind": { "container": { "image": "alpine:3.20", "idle": true } }, "networks": { "vlan10": null } },
+            "pc2": { "kind": { "container": { "image": "alpine:3.20", "idle": true } }, "networks": { "vlan20": null } },
+            "sw1": { "kind": { "container": { "image": "vrnetlab/cisco_iol:L2-17.12.01", "appliance": "cisco-iol-l2", "config": "spanning-tree mode rapid-pvst" } } }
+          },
+          "networks": {
+            "vlan10": { "cidr": "10.10.10.0/24", "switch": "sw1", "vlan": 10, "device": "sw1" },
+            "vlan20": { "cidr": "10.10.20.0/24", "switch": "sw1", "vlan": 20, "device": "sw1" }
+          }
+        }"#,
+    )?;
+    let c = accepted(&topo)?;
+    assert_eq!(c.spec().networks["sw1"].switch.as_deref(), Some("sw1"));
+    assert!(c.spec().machines["sw1"].networks.is_empty());
+    assert_eq!(c.spec().machines["pc1"].networks.keys().collect::<Vec<_>>(), ["sw1.vlan10"]);
+    assert!(c.yaml().contains("appliance: cisco-iol-l2\n      config: configs/sw1.cfg"), "{}", c.yaml());
+    assert_eq!(
+        c.files(),
+        [ProjectFile {
+            path: "configs/sw1.cfg".into(),
+            contents: "spanning-tree mode rapid-pvst\n".into(),
+        }]
+    );
+    Ok(())
+}
+
+/// A Cisco router on a switch's VLAN: Isoloom's VLANs have no gateway, so the router joins it
+/// at an ordinary address, and the project still builds.
+#[test]
+fn a_cisco_router_on_a_vlan_is_a_member_of_it() -> Outcome {
+    let topo: Topology = serde_json::from_str(
+        r#"{
+          "name": "router-on-vlan",
+          "nodes": {
+            "pc": { "kind": { "container": { "image": "alpine:3.20", "idle": true } }, "networks": { "vlan10": null } },
+            "r": { "kind": { "container": { "image": "vrnetlab/cisco_iol:17.12.01", "appliance": "cisco-iol" } }, "networks": { "vlan10": null, "office": null } }
+          },
+          "networks": {
+            "office": { "cidr": "10.10.1.0/24" },
+            "vlan10": { "cidr": "10.10.10.0/24", "switch": "sw1", "vlan": 10 }
+          }
+        }"#,
+    )?;
+    let c = accepted(&topo)?;
+    assert_eq!(octet(&c, "r", "sw1.vlan10")?, 11);
+    // On a plain LAN it is still the gateway.
+    assert_eq!(c.spec().networks["office"].gateway.as_deref(), Some("r"));
+    assert_eq!(octet(&c, "r", "office")?, 1);
+    Ok(())
+}
+
+/// A Dynamips router boots the IOS image the user adds: no image of its own.
+#[test]
+fn a_dynamips_router_boots_its_firmware() -> Outcome {
+    let topo: Topology = serde_json::from_str(
+        r#"{
+          "name": "classic",
+          "nodes": {
+            "r1": { "kind": { "container": { "image": "", "appliance": "cisco-dynamips" } }, "networks": { "office": null } },
+            "pc": { "kind": { "container": { "image": "alpine:3.20", "idle": true } }, "networks": { "office": null } }
+          },
+          "networks": { "office": { "cidr": "10.10.1.0/24" } }
+        }"#,
+    )?;
+    let c = accepted(&topo)?;
+    assert!(
+        c.yaml().contains("app:\n      appliance: cisco-dynamips\n      firmware: images/r1.bin"),
+        "{}",
+        c.yaml()
+    );
+    Ok(())
+}
+
+/// A switch's VLANs nest under a LAN named after the switch: a LAN of the project can't have
+/// that name too, in either order.
+#[test]
+fn a_switch_can_not_share_a_lans_name() -> Outcome {
+    let mut topo = two_lans()?;
+    let vlan = Lan {
+        switch: Some("office".into()),
+        vlan: Some(10),
+        ..lan("10.10.10.0/24")
+    };
+    topo.networks.insert("vlan10".into(), vlan.clone());
+    join(&mut topo, "server", "vlan10", None)?;
+    let clash = |r: Result<Compiled>| matches!(r, Err(Error::SwitchNameTaken { switch }) if switch == "office");
+    assert!(clash(compile(&topo)));
+    topo.networks.shift_remove("vlan10");
+    topo.networks.shift_insert(0, "vlan10".into(), vlan);
+    assert!(clash(compile(&topo)));
+    assert_eq!(
+        compile(&topo).unwrap_err().to_string(),
+        "switch `office` has the name of a LAN; rename one of them"
+    );
+    Ok(())
+}

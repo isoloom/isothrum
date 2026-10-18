@@ -1,0 +1,7 @@
+{
+  "rules": {
+    "exception/expect": {
+      "xtask": 1
+    }
+  }
+}

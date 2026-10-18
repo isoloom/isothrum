@@ -1,0 +1,303 @@
+//! The `vagrant` driver: a Vagrantfile's VMs, on the provider the run picked among the
+//! manifest's (`${run.provider}`). Every Vagrant command of the run, its actions' included, runs
+//! with `VAGRANT_DOTFILE_PATH` at the manifest's `identity.vagrant.dotfile` (the run's state
+//! folder), so a replaced run folder never loses track of its VMs. Its actions run the native
+//! commands run-manifest-v0.md §6 fixes; its status is `lifecycle.status` (`vagrant status
+//! --machine-readable`) matched to the manifest's machines by their define names. Ported from the
+//! launcher's `runtime/vm.rs`, `runtime/vm/{status,recover}.rs` and `platform/exec/vagrant.rs`.
+
+mod actions;
+mod forwarded;
+mod orphans;
+mod status;
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use isoloom_manifest::{Action, Native, SnakeName, Step, Template, VagrantIdentity, VagrantProvider, access};
+
+use super::{Driver, Observed};
+use crate::Result;
+use crate::error::Error;
+use crate::executor::{Cx, Echo, call_ok, step_env};
+use crate::process::ProcessSpec;
+use crate::scope::provider_id;
+use crate::state::Op;
+use crate::status::{MachineStatus, PublishedPort, ShellCommand};
+
+/// The variable Vagrant reads its state folder from.
+const DOTFILE_VAR: &str = "VAGRANT_DOTFILE_PATH";
+
+/// How long one of an action's quick reads may take (`VBoxManage`, `vagrant status`).
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long hot-adding the access VM may take: booting it, and maybe fetching its box.
+const ATTACH_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// How long hot-removing (destroying) the access VM may take.
+const DETACH_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The id the plugin check reports under.
+const PLUGINS: &str = "plugins";
+
+/// The provider that forwards no port to this computer: a VM's published ports answer at its
+/// own address.
+const ESXI: &str = "vmware_esxi";
+
+/// Where ports forwarded to this computer answer.
+const LOOPBACK: &str = "127.0.0.1";
+
+/// The `vagrant` driver of one manifest.
+#[derive(Debug, Clone)]
+pub(crate) struct Vagrant {
+    identity: VagrantIdentity,
+}
+
+impl Vagrant {
+    pub(crate) fn new(identity: VagrantIdentity) -> Vagrant {
+        Vagrant { identity }
+    }
+
+    /// Vagrant's state folder for the run, absolute: the manifest's `dotfile`, else `.vagrant`
+    /// next to the Vagrantfile (Vagrant's own default).
+    fn dotfile(&self, cx: &Cx<'_>) -> Result<PathBuf> {
+        match &self.identity.dotfile {
+            Some(t) => Ok(cx.run.dir().join(cx.vars.render(t.template(), "identity.vagrant.dotfile")?)),
+            None => Ok(cx.run.dir().join(".vagrant")),
+        }
+    }
+
+    /// Whether the provider of `scope` takes its management commands elevated (Hyper-V).
+    pub(crate) fn elevates(&self, scope: &crate::scope::Scope) -> bool {
+        let asked = scope.provider.as_deref();
+        self.identity
+            .providers
+            .iter()
+            .any(|p| Some(provider_id(p.id).as_str()) == asked && p.elevation == isoloom_manifest::Elevation::Hyperv)
+    }
+
+    /// The run's provider among the manifest's.
+    fn provider(&self, cx: &Cx<'_>) -> Result<&VagrantProvider> {
+        let asked = cx.scope.provider.as_deref().ok_or_else(|| Error::Provider {
+            provider: String::new(),
+            reason: "a Vagrant run needs a provider: pass one of the manifest's (`virtualbox`, `libvirt`, …)".into(),
+        })?;
+        self.identity
+            .providers
+            .iter()
+            .find(|p| provider_id(p.id) == asked)
+            .ok_or_else(|| Error::Provider {
+                provider: asked.to_owned(),
+                reason: "isn't one of this run's providers".into(),
+            })
+    }
+
+    /// `vagrant <args>` for the step `id`, in the manifest's folder, with the state folder, what
+    /// the manifest delivers to that step (the ESXi host, a provider's params) and the relays'
+    /// settings.
+    fn vagrant(&self, cx: &Cx<'_>, id: &str, args: &[&str]) -> Result<ProcessSpec> {
+        let mut env = self.env(cx)?;
+        env.extend(step_env(cx, id));
+        // An ESXi host behind the macOS relays: Vagrant talks to it through them.
+        env.extend(cx.relayed.iter().flat_map(|r| r.env.iter().cloned()));
+        Ok(ProcessSpec {
+            program: "vagrant".into(),
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            cwd: Some(cx.run.dir().to_path_buf()),
+            env,
+            stdin: None,
+        })
+    }
+
+    /// The address of each running VM that publishes a port, or that Compose runs in, by define
+    /// name, as `vagrant ssh-config` gives it (ESXi forwards no port: the player reaches the VM
+    /// itself). A VM whose address can't be read is left out, and its ports with it.
+    async fn guest_addresses(&self, cx: &Cx<'_>, read: &status::Reading) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let manifest = cx.run.manifest();
+        for m in manifest.machines.iter().filter(|m| answers(manifest, m)) {
+            let define = define_name(m);
+            if read.states.get(define).map(|s| status::machine_state(s)) != Some(crate::status::MachineState::Running) {
+                continue;
+            }
+            let Ok(spec) = self.vagrant(cx, "status", &["ssh-config", define]) else {
+                continue;
+            };
+            if let Ok(text) = call_ok(cx, "status", &spec, READ_TIMEOUT, Echo::Quiet).await
+                && let Some(host) = status::host_name(&text)
+            {
+                out.insert(define.to_owned(), host);
+            }
+        }
+        out
+    }
+
+    /// The plugins `vagrant plugin list --machine-readable` names.
+    async fn plugins(&self, cx: &Cx<'_>) -> Result<Vec<String>> {
+        let spec = self.vagrant(cx, PLUGINS, &["plugin", "list", "--machine-readable"])?;
+        let out = call_ok(cx, PLUGINS, &spec, READ_TIMEOUT, Echo::Quiet).await?;
+        Ok(status::plugins(&out))
+    }
+}
+
+impl Driver for Vagrant {
+    /// The provider must be one of the run's, exist on this host, not be refused by Isoloom for
+    /// this run, and have its plugin.
+    async fn preflight(&self, cx: &Cx<'_>) -> Result<()> {
+        let p = self.provider(cx)?;
+        let id = provider_id(p.id);
+        let refuse = |reason: String| Error::Provider { provider: id.clone(), reason };
+        if !p.hosts.contains(&cx.scope.host) {
+            return Err(refuse("doesn't exist on this host".into()));
+        }
+        if let Some(why) = &p.refusal {
+            return Err(refuse(format!("this run can't run there: {why}")));
+        }
+        if let Some(plugin) = &p.plugin
+            && !self.plugins(cx).await?.iter().any(|name| name == plugin.as_str())
+        {
+            return Err(refuse(format!("needs the Vagrant plugin `{plugin}`: `vagrant plugin install {plugin}`")));
+        }
+        Ok(())
+    }
+
+    fn prepare(&self, cx: &Cx<'_>) -> Result<()> {
+        // Its parent is the run's own folder, owner-only; Vagrant makes the folder itself.
+        let dotfile = self.dotfile(cx)?;
+        match dotfile.parent() {
+            Some(parent) if parent.starts_with(cx.run.runner.config.home.as_path()) => crate::store::private_dir(parent).map_err(Error::io(parent, "created")),
+            _ => Ok(()),
+        }
+    }
+
+    fn env(&self, cx: &Cx<'_>) -> Result<Vec<(String, String)>> {
+        Ok(vec![(DOTFILE_VAR.to_owned(), self.dotfile(cx)?.display().to_string())])
+    }
+
+    async fn action(&self, cx: &Cx<'_>, step: &Step, action: Action, with: &BTreeMap<SnakeName, Template>) -> Result<()> {
+        match action {
+            Action::VagrantReconcileProvider => actions::reconcile_provider(self, cx, step).await,
+            Action::VagrantDiscardAbortedSaved => actions::discard_aborted_saved(cx, step).await,
+            Action::VagrantRemoveOrphans => orphans::remove(cx, step).await,
+            Action::VagrantResetState => actions::reset_state(self, cx),
+            Action::VagrantWakeController => actions::wake_controller(self, cx, step, with).await,
+            Action::VagrantParkController => actions::park_controller(self, cx, step, with).await,
+            Action::VagrantCheckForwardedPorts => forwarded::check(cx, step).await,
+            other => Err(super::foreign_action("Vagrant", step, other)),
+        }
+    }
+
+    async fn observe(&self, cx: &Cx<'_>) -> Result<Observed> {
+        let out = super::status_report(cx).await?;
+        let read = status::parse(&out);
+        let guests = if cx.scope.provider.as_deref() == Some(ESXI) {
+            Some(self.guest_addresses(cx, &read).await)
+        } else {
+            None
+        };
+        Ok(machines(cx.run.manifest(), &read, guests.as_ref()))
+    }
+
+    fn after_down(&self, _cx: &Cx<'_>) -> Result<()> {
+        // `vagrant.reset_state`, a step of the manifest's `down`, clears the state folder.
+        Ok(())
+    }
+
+    /// Boots the access VM the initial `up` left defined but `autostart: false`: `vagrant up
+    /// <name>`, with the picked box in [`access::BOX_ENV`] (its `ENV.fetch` default otherwise).
+    /// The network is the VM's, fixed by the manifest, so it is not chosen here.
+    async fn attach(&self, cx: &Cx<'_>, native: &str, image: Option<&str>, _network: Option<&str>) -> Result<()> {
+        // The box joins on the run's own provider, the one its other VMs came up on.
+        let provider = cx.scope.provider.as_ref().map(|p| format!("--provider={p}"));
+        let mut args = vec!["up", native];
+        if let Some(flag) = &provider {
+            args.push(flag);
+        }
+        let mut spec = self.vagrant(cx, Op::Attach.as_str(), &args)?;
+        if let Some(box_name) = image {
+            spec.env.push((access::BOX_ENV.to_owned(), box_name.to_owned()));
+        }
+        call_ok(cx, Op::Attach.as_str(), &spec, ATTACH_TIMEOUT, Echo::Shown).await?;
+        Ok(())
+    }
+
+    /// Destroys the access VM, leaving the rest of the run up: `vagrant destroy -f <name>`.
+    async fn detach(&self, cx: &Cx<'_>, native: &str) -> Result<()> {
+        let spec = self.vagrant(cx, Op::Detach.as_str(), &["destroy", "-f", native])?;
+        call_ok(cx, Op::Detach.as_str(), &spec, DETACH_TIMEOUT, Echo::Shown).await?;
+        Ok(())
+    }
+
+    /// `vagrant ssh <define>`: an interactive SSH session into the access VM.
+    fn shell_command(&self, cx: &Cx<'_>, native: &str) -> Result<ShellCommand> {
+        Ok(ShellCommand {
+            program: "vagrant".into(),
+            args: vec!["ssh".into(), native.into()],
+            cwd: Some(cx.run.dir().to_path_buf()),
+        })
+    }
+}
+
+/// Whether the ports of `m` answer somewhere: it publishes one, or it is the VM Compose runs in
+/// (the containers' ports answer where it does).
+fn answers(manifest: &isoloom_manifest::Manifest, m: &isoloom_manifest::Machine) -> bool {
+    m.ports.iter().any(|p| p.publish.is_some()) || manifest.guest.as_ref().is_some_and(|g| g.machine == m.name)
+}
+
+/// A machine's name in the Vagrantfile.
+fn define_name(m: &isoloom_manifest::Machine) -> &str {
+    match &m.native {
+        Some(Native::Vagrant { vagrant, .. }) => vagrant.as_str(),
+        _ => m.name.as_str(),
+    }
+}
+
+/// Every machine of the manifest as Vagrant reports it, by its define name. Locally a published
+/// port is forwarded to this computer at its fixed number while the VM exists. With `guests`
+/// (ESXi, which forwards nothing), it answers at its VM's address, on the VM's own port, while
+/// that address is known.
+fn machines(manifest: &isoloom_manifest::Manifest, read: &status::Reading, guests: Option<&BTreeMap<String, String>>) -> Observed {
+    let mut out = Observed::default();
+    for m in &manifest.machines {
+        let define = define_name(m);
+        let state = read
+            .states
+            .get(define)
+            .map_or(crate::status::MachineState::Absent, |s| status::machine_state(s));
+        let host = match guests {
+            Some(guests) => guests.get(define).cloned(),
+            None => Some(LOOPBACK.to_owned()),
+        };
+        let mut published = Vec::new();
+        let host = host.filter(|_| state != crate::status::MachineState::Absent);
+        if let Some(host) = host.as_ref().filter(|_| answers(manifest, m)) {
+            out.hosts.insert(m.name.to_string(), host.clone());
+        }
+        if host.is_some() {
+            for p in &m.ports {
+                let Some(forwarded) = p.publish.as_ref().and_then(|x| x.preferred) else {
+                    continue;
+                };
+                let host_port = if guests.is_some() { p.port.get() } else { forwarded.get() };
+                published.push(PublishedPort {
+                    port: p.port.get(),
+                    protocol: p.kind.transport(),
+                    host_port,
+                });
+                out.published.insert((m.name.to_string(), p.name.to_string()), host_port);
+            }
+        }
+        out.machines.push(MachineStatus {
+            name: m.name.to_string(),
+            role: m.role,
+            state,
+            addresses: m.addresses.iter().map(|(n, a)| (n.to_string(), a.to_string())).collect(),
+            published,
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests;

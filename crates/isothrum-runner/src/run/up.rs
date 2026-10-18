@@ -1,0 +1,269 @@
+//! Starting a run: the occupied-slot rules, the start steps with their recovery retry, the ready
+//! conditions, then outputs, the message and the embedder's hooks.
+
+use isoloom_manifest::Recovery;
+use serde_json::json;
+
+use super::Running;
+use super::operation::Done;
+use crate::Result;
+use crate::driver::Observed;
+use crate::error::Error;
+use crate::events::WarningCode;
+use crate::events::{Emitter, Events};
+use crate::executor::{Cx, Ran, run_steps};
+use crate::hooks::Edge;
+use crate::options::{Occupied, RunOptions};
+use crate::params::{params_for_existing, params_for_start};
+use crate::secrets::{check_secrets, sensitive_values};
+use crate::state::{Op, RunState};
+use crate::status::{MachineState, OutputValue, Started, any_target_running};
+use crate::store::RunRecord;
+use crate::{clock, outputs, ready, tools};
+
+/// What `up` finds where it would start the run.
+enum Slot {
+    /// Nothing of the run exists.
+    Free,
+    /// Something is left (a failed start, stopped machines): removed before the start.
+    Leftovers,
+    /// The run is parked, and the embedder resumes parked runs.
+    Parked,
+}
+
+impl Running<'_> {
+    /// Starts the run: refused while it runs or runs elsewhere; a parked run is resumed (with
+    /// [`Occupied::ResumeParked`]); leftovers are removed first.
+    ///
+    /// # Errors
+    ///
+    /// Fails, after its `error` event, when the run is up already (`already_running`) or recorded
+    /// elsewhere (`running_elsewhere`); when a param, secret or tool is missing or refused; when a
+    /// host port is taken (`port_in_use`); when a step fails or runs out of time (`tool_failed`,
+    /// `tool_missing`, `timeout`); when a ready condition doesn't hold (`not_ready`); or when the
+    /// run's state can't be locked or written (`locked`, `io`).
+    pub async fn up(&self, opts: &RunOptions, events: &dyn Events) -> Result<Started> {
+        let opts = &self.connected(opts);
+        let mask = sensitive_values(self.manifest(), &opts.secrets);
+        self.operate(Op::Up, events, mask, async |e: &Emitter<'_>| self.up_work(opts, e).await).await
+    }
+
+    async fn up_work(&self, opts: &RunOptions, events: &Emitter<'_>) -> Result<Done<Started>> {
+        let scope = self.scope(opts.provider.clone());
+        check_secrets(self.manifest(), &opts.secrets, &scope)?;
+        let mut record = self.record_or_fresh()?;
+        self.refuse_elsewhere(&record, opts.host_label.as_deref())?;
+        let params = params_for_start(self.manifest(), &opts.params, &scope)?;
+        if crate::ssh::needed(self.manifest()) {
+            crate::ssh::ensure_key(self.runner.config.processes.as_ref(), &self.runner.config.home).await?;
+        }
+        let mut cx = self.acting(self.cx(params, &opts.secrets, events, opts.provider.clone())?)?;
+        // Leftovers are removed with the names they were made with.
+        Self::bind_record(&mut cx, &record);
+        self.relay(&mut cx).await?;
+        self.driver.preflight(&cx).await?;
+        self.driver.prepare(&cx)?;
+        tools::probe(&cx).await?;
+        let observed = self.observe(&mut cx).await?;
+        match self.slot(&observed, &record, opts.occupied)? {
+            Slot::Parked => return self.resume_work(opts, events, false).await,
+            Slot::Leftovers => self.clear(&mut cx, &record, opts).await?,
+            Slot::Free => {}
+        }
+        record.params = cx.vars.params().clone();
+        record.cloud = self.manifest().cloud;
+        record.host_label.clone_from(&opts.host_label);
+        record.provider.clone_from(&opts.provider);
+        record.started_at = Some(clock::rfc3339(self.runner.config.clock.now()));
+        self.place(&mut record, opts)?;
+        Self::bind_record(&mut cx, &record);
+        self.begin(&mut record, Op::Up)?;
+        crate::executor::state_files::write(&cx, true)?;
+        let ran = self.start(&mut cx).await?;
+        // What the guests wait for once they exist: their secrets, where no store holds them.
+        crate::guest::deliver(&mut cx, None).await?;
+        // The ready conditions may name an output (`${outputs.ip}`, the run host).
+        self.read_outputs(&mut cx).await?;
+        ready::check(&mut cx, Some(&ran)).await?;
+        self.seal(&mut cx, &mut record).await?;
+        let (outputs, message) = self.finish(&mut cx, Edge::AfterUp).await?;
+        record.state = RunState::Ready;
+        Ok(ready_run(record, outputs, message))
+    }
+
+    /// Fails when the run's record puts it on another place than `asked`.
+    pub(crate) fn refuse_elsewhere(&self, record: &RunRecord, asked: Option<&str>) -> Result<()> {
+        match (record.host_label.as_deref(), asked) {
+            (Some(recorded), Some(asked)) if recorded != asked && record.state != RunState::Absent => Err(Error::RunningElsewhere {
+                run: self.name().to_string(),
+                recorded: recorded.into(),
+                asked: asked.into(),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    fn slot(&self, observed: &Observed, record: &RunRecord, occupied: Occupied) -> Result<Slot> {
+        let exists = observed.machines.iter().any(|m| m.state != MachineState::Absent);
+        let parked = record.state == RunState::Parked;
+        let running = any_target_running(&observed.machines);
+        let already = || Err(Error::AlreadyRunning { run: self.name().to_string() });
+        match occupied {
+            _ if !exists => Ok(Slot::Free),
+            Occupied::Replace => Ok(Slot::Leftovers),
+            // A start that failed with its machines up: what it left goes, then a fresh start.
+            _ if record.state == RunState::Failed => Ok(Slot::Leftovers),
+            _ if running && !parked => already(),
+            Occupied::ResumeParked if parked => Ok(Slot::Parked),
+            Occupied::Refuse if parked => already(),
+            _ => Ok(Slot::Leftovers),
+        }
+    }
+
+    /// Removes what is left of the run: its `down` steps, with the params it was started with
+    /// (the region it was applied in, its seal), never the ones of the start to come.
+    async fn clear(&self, cx: &mut Cx<'_>, record: &RunRecord, opts: &RunOptions) -> Result<()> {
+        cx.events
+            .warning(WarningCode::LeftoversRemoved, "removing what an earlier run left before starting");
+        let fresh = cx.vars.params().clone();
+        if record.started_at.is_some() {
+            cx.vars
+                .set_params(params_for_existing(self.manifest(), Some(&record.params), &opts.params, &cx.scope)?);
+        }
+        let cleared = run_steps(cx, "lifecycle.down", self.manifest().lifecycle.down.as_slice()).await.map(drop);
+        cx.vars.set_params(fresh);
+        cleared
+    }
+
+    /// Where the run goes on its place, kept in `record`: its slot (when the manifest names
+    /// `${run.slot}`), its SSH jump, and its expiry (when the manifest has one).
+    fn place(&self, record: &mut RunRecord, opts: &RunOptions) -> Result<()> {
+        let place = opts.host_label.as_deref();
+        if crate::slot::needed(self.manifest()) {
+            let taken = crate::slot::taken(&self.runner.store.records()?, self.name(), place);
+            record.slot = Some(crate::slot::pick(record.slot, &taken, place)?);
+        }
+        record.ssh_jump.clone_from(&opts.ssh_jump);
+        record.expires_at = self.manifest().expiry.as_ref().map(|e| {
+            let minutes = u64::from(e.default_minutes.unwrap_or(DEFAULT_LIFETIME_MINUTES));
+            let life = opts.lifetime.map_or(minutes * 60, |l| l.as_secs());
+            clock::unix_seconds(self.runner.config.clock.now()).saturating_add(life)
+        });
+        Ok(())
+    }
+
+    /// The start steps; a failure whose message holds one of `recovery.stale_markers` runs the
+    /// recovery steps and starts again, up to `recovery.retries` times. A genuine failure never
+    /// retries.
+    async fn start(&self, cx: &mut Cx<'_>) -> Result<Ran> {
+        let up = self.manifest().lifecycle.up.as_slice();
+        let none = Recovery {
+            stale_markers: Vec::new(),
+            steps: Vec::new(),
+            retries: isoloom_manifest::Retries::default(),
+            apply_retries: None,
+        };
+        let recovery = self.manifest().recovery.as_ref().unwrap_or(&none);
+        let mut left = recovery.retries.get();
+        let mut applies = recovery.apply_retries.map_or(0, isoloom_manifest::Retries::get);
+        loop {
+            cx.stale.take();
+            match run_steps(cx, crate::executor::UP, up).await {
+                Err(e) if left > 0 && cx.stale.take().is_some() => {
+                    left -= 1;
+                    cx.events
+                        .warning(WarningCode::Recovering, &format!("clearing stale state, then starting again: {e}"));
+                    run_steps(cx, "recovery.steps", &recovery.steps).await?;
+                }
+                // A module that converges on a later apply (a cloud's eventual consistency); any
+                // other step's failure is the start's.
+                Err(e @ Error::ToolFailed { .. }) if applies > 0 && applied(up, &e) => {
+                    applies -= 1;
+                    cx.events.warning(WarningCode::Retrying, &format!("applying again: {e}"));
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// Reads the run's published ports and outputs, fills its message, and runs the hooks at
+    /// `edge`.
+    pub(crate) async fn finish(&self, cx: &mut Cx<'_>, edge: Edge) -> Result<(Vec<OutputValue>, Option<String>)> {
+        let outputs = self.read_outputs(cx).await?;
+        outputs::emit(cx.events, &outputs);
+        let message = outputs::message(self.manifest(), &cx.vars, &outputs);
+        self.hooks(cx, edge, &outputs).await;
+        Ok((outputs, message))
+    }
+}
+
+/// Whether `e` is the failure of a step of `up` that runs `terraform apply`.
+fn applied(up: &[isoloom_manifest::Step], e: &Error) -> bool {
+    let Error::ToolFailed { step, .. } = e else { return false };
+    up.iter().filter(|s| s.id.as_str() == step).any(|s| match &s.run {
+        isoloom_manifest::Run::Argv(argv) => argv_applies(argv),
+        isoloom_manifest::Run::Action { .. } => false,
+    })
+}
+
+/// Whether `argv` (on any host) is `terraform apply …` (or `tofu`), global options such as
+/// `-chdir=<module>` before the subcommand.
+fn argv_applies(argv: &isoloom_manifest::HostArgv) -> bool {
+    let applies = |a: &isoloom_manifest::Argv| {
+        let subcommand = a.args().iter().map(ToString::to_string).find(|w| !w.starts_with('-'));
+        ["terraform", "tofu"].contains(&a.program().as_str()) && subcommand.as_deref() == Some("apply")
+    };
+    match argv {
+        isoloom_manifest::HostArgv::Every(a) => applies(a),
+        isoloom_manifest::HostArgv::PerHost(p) => p
+            .default
+            .iter()
+            .chain(p.linux.iter())
+            .chain(p.macos.iter())
+            .chain(p.windows.iter())
+            .any(applies),
+    }
+}
+
+/// How long a run with an `expiry` lives when neither the embedder nor the manifest says.
+const DEFAULT_LIFETIME_MINUTES: u32 = 240;
+
+/// A run that came up, as the operation returns it and its `result` event says.
+pub(crate) fn ready_run(record: RunRecord, outputs: Vec<OutputValue>, message: Option<String>) -> Done<Started> {
+    let shown: Vec<serde_json::Value> = outputs
+        .iter()
+        .map(|o| json!({ "name": o.name, "role": o.role, "value": if o.sensitive { o.value.as_ref().map(|_| "***".to_owned()) } else { o.value.clone() } }))
+        .collect();
+    let data = json!({ "state": RunState::Ready, "outputs": shown, "message": message });
+    Done {
+        value: Started { record, outputs, message },
+        ok: true,
+        data,
+        state: Some(RunState::Ready),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(json: &str) -> isoloom_manifest::HostArgv {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn an_apply_is_terraforms_apply_subcommand_wherever_its_module() {
+        assert!(argv_applies(&argv(r#"["terraform", "apply", "-auto-approve"]"#)));
+        assert!(argv_applies(&argv(
+            r#"["terraform", "-chdir=${run.state_dir}/module", "apply", "-auto-approve"]"#
+        )));
+        assert!(argv_applies(&argv(r#"["tofu", "apply"]"#)));
+        assert!(!argv_applies(&argv(r#"["terraform", "destroy", "-auto-approve"]"#)));
+        assert!(
+            !argv_applies(&argv(r#"["terraform", "-chdir=apply", "init"]"#)),
+            "a folder named apply isn't the subcommand"
+        );
+        assert!(!argv_applies(&argv(r#"["ssh", "apply"]"#)));
+        assert!(argv_applies(&argv(r#"{"default": ["terraform", "apply"], "windows": ["terraform", "apply"]}"#)));
+    }
+}
