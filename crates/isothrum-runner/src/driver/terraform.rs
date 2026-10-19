@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use isoloom_manifest::{Action, ExpiryUnit, SnakeName, Step, Template, TerraformIdentity};
 
-use super::{Driver, Observed};
+use super::{Attached, Attacker, Driver, Observed};
 use crate::Result;
 use crate::error::Error;
 use crate::executor::Cx;
@@ -117,20 +117,22 @@ impl Driver for Terraform {
         FORGOTTEN.iter().try_for_each(|f| remove(&state_dir.join(f)))
     }
 
-    /// A cloud run doesn't hot-add an access box: its attacker runs locally, not in the cloud.
-    fn attach(&self, _cx: &Cx<'_>, _native: &str, _image: Option<&str>, _network: Option<&str>) -> impl Future<Output = Result<()>> {
+    /// A cloud run doesn't hot-add an access box, machine or ad hoc: its attacker runs locally,
+    /// not in the cloud.
+    // TODO: an ad-hoc cloud attacker (a throwaway instance on the lab's VPC) is a follow-up.
+    fn attach(&self, _cx: &Cx<'_>, _attacker: Attacker<'_>, _image: Option<&str>, _network: Option<&str>) -> impl Future<Output = Result<Attached>> {
         std::future::ready(Err(Error::Unsupported {
             what: "hot-adding an access machine on a cloud target".into(),
         }))
     }
 
-    fn detach(&self, _cx: &Cx<'_>, _native: &str) -> impl Future<Output = Result<()>> {
+    fn detach(&self, _cx: &Cx<'_>, _attacker: Attacker<'_>) -> impl Future<Output = Result<()>> {
         std::future::ready(Err(Error::Unsupported {
             what: "hot-removing an access machine on a cloud target".into(),
         }))
     }
 
-    fn shell_command(&self, _cx: &Cx<'_>, _native: &str) -> Result<ShellCommand> {
+    fn shell_command(&self, _cx: &Cx<'_>, _attacker: Attacker<'_>) -> Result<ShellCommand> {
         Err(Error::Unsupported {
             what: "a shell into a cloud access machine".into(),
         })

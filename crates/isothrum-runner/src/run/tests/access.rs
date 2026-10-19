@@ -1,10 +1,20 @@
-//! Hot-adding the on-demand access box into a running run, and taking it back out, through the
-//! fake engines: the Compose `attacker` service in its `access` profile, and the Vagrant
-//! `attacker` define. No real tool ever runs.
+//! Hot-adding the learner's attacker box into a running run, and taking it back out, through the
+//! fake engines: an ad-hoc Docker container on the lab's network (the default, no manifest machine),
+//! the Compose `attacker` service in its `access` profile, and the Vagrant `attacker` define. No
+//! real tool ever runs.
 
 use super::*;
 use crate::ErrorCode;
-use crate::testing::{FLAG_PORTAL_ACCESS, FLAG_VM_ACCESS};
+use crate::testing::{FLAG_PORTAL, FLAG_PORTAL_ACCESS, FLAG_VM_ACCESS};
+
+/// The fake of the lab's Docker, extended to answer the ad-hoc box's calls: `docker inspect`
+/// reports a lab address, and `run`/`rm`/`network connect` succeed (left to the lab model).
+fn adhoc_answer(engine: &Mutex<Engine>, call: &Call) -> Reply {
+    if call.line().contains("inspect -f") {
+        return Reply::ok(r#"{"flag-portal_lab":{"IPAddress":"10.30.0.123"}}"#);
+    }
+    answer(engine, call)
+}
 
 #[tokio::test]
 async fn attach_brings_the_access_service_up_in_its_profile_with_the_picked_image() {
@@ -53,12 +63,63 @@ async fn detach_removes_just_the_access_service() {
 }
 
 #[tokio::test]
-async fn attach_refuses_a_lab_with_no_on_demand_access_box() {
-    let f = fixture(); // flag-portal: no access machine
+async fn attach_stands_up_an_ad_hoc_box_when_the_lab_has_no_access_machine() {
+    // flag-portal declares no access machine: attach no longer errors, it makes one ad hoc.
+    let f = fixture_answering(FLAG_PORTAL, adhoc_answer);
     f.set(Containers::Up);
     let run = f.runner.open(&f.manifest, None).unwrap();
-    let err = run.attach(None, None, None, &Recorder::new()).await.unwrap_err();
-    assert_eq!(err.code(), ErrorCode::Unsupported);
+
+    let events = Recorder::new();
+    let report = run.attach(None, None, Some("myimage"), &events).await.unwrap();
+
+    assert_eq!(report.machine, "flag-portal-isoloom-access");
+    assert_eq!(report.native, "flag-portal-isoloom-access");
+    assert_eq!(report.network.as_deref(), Some("lab"), "the lab's first network");
+    assert_eq!(report.address.as_deref(), Some("10.30.0.123"), "its address, read with docker inspect");
+    assert_eq!(report.image.as_deref(), Some("myimage"));
+
+    let run_call = f.fake.last("run -d").expect("an ad-hoc container is started detached");
+    let line = run_call.line();
+    assert!(line.contains("--name flag-portal-isoloom-access"), "named after the project: {line}");
+    assert!(line.contains("--network flag-portal_lab"), "on the lab's project network: {line}");
+    assert!(line.contains("myimage") && line.ends_with("sleep infinity"), "the picked image, idle: {line}");
+    assert!(matches!(kinds(&events).last(), Some(EventKind::Result { ok: true, .. })));
+}
+
+#[tokio::test]
+async fn an_ad_hoc_box_defaults_to_kali() {
+    let f = fixture_answering(FLAG_PORTAL, adhoc_answer);
+    f.set(Containers::Up);
+    let run = f.runner.open(&f.manifest, None).unwrap();
+    run.attach(None, None, None, &Recorder::new()).await.unwrap();
+    let run_call = f.fake.last("run -d").unwrap();
+    assert!(
+        run_call.line().contains(isoloom_manifest::access::DEFAULT_IMAGE),
+        "the Kali default stands when the learner picks nothing: {}",
+        run_call.line()
+    );
+}
+
+#[tokio::test]
+async fn detach_removes_the_ad_hoc_box_by_name() {
+    let f = fixture_answering(FLAG_PORTAL, adhoc_answer);
+    f.set(Containers::Up);
+    let run = f.runner.open(&f.manifest, None).unwrap();
+    run.detach(None, &Recorder::new()).await.unwrap();
+    let rm = f.fake.last("rm -f flag-portal-isoloom-access").expect("the ad-hoc box is removed by name");
+    assert!(rm.line().contains("rm -f flag-portal-isoloom-access"), "{}", rm.line());
+}
+
+#[tokio::test]
+async fn shell_command_execs_into_the_ad_hoc_box() {
+    let f = fixture(); // flag-portal: no access machine, so an ad-hoc box
+    let run = f.runner.open(&f.manifest, None).unwrap();
+    let cmd = run.shell_command(None).unwrap();
+    assert_eq!(cmd.program, "docker");
+    let line = cmd.args.join(" ");
+    assert!(line.starts_with("exec -it flag-portal-isoloom-access"), "{line}");
+    assert!(line.contains("exec bash") && line.contains("exec sh"), "bash with an sh fallback: {line}");
+    assert!(cmd.cwd.is_some(), "runs in the run's folder");
 }
 
 #[tokio::test]
@@ -135,12 +196,13 @@ async fn shell_command_opens_the_vagrant_define_by_name() {
 }
 
 #[tokio::test]
-async fn shell_command_reuses_the_access_machine_selection() {
+async fn shell_command_refuses_an_unknown_named_machine() {
+    // Naming a machine the lab doesn't have is still an error, access machine or not.
     let f = fixture_with(FLAG_PORTAL_ACCESS);
     let run = f.runner.open(&f.manifest, None).unwrap();
     assert_eq!(run.shell_command(Some("nope")).unwrap_err().code(), ErrorCode::MachineUnknown);
 
-    let none = fixture();
-    let bare = none.runner.open(&none.manifest, None).unwrap();
-    assert_eq!(bare.shell_command(None).unwrap_err().code(), ErrorCode::Unsupported);
+    let bare = fixture();
+    let bare = bare.runner.open(&bare.manifest, None).unwrap();
+    assert_eq!(bare.shell_command(Some("nope")).unwrap_err().code(), ErrorCode::MachineUnknown);
 }

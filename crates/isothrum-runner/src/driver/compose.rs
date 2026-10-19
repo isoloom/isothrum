@@ -3,6 +3,7 @@
 //! `lifecycle.status` (`ps --all --format json`) matched to the manifest's machines.
 
 mod actions;
+mod adhoc;
 mod config;
 mod pins;
 mod ps;
@@ -13,7 +14,7 @@ use std::time::Duration;
 
 use isoloom_manifest::{Action, ComposeIdentity, SnakeName, Step, Template, access};
 
-use super::{Driver, Observed};
+use super::{Attached, Attacker, Driver, Observed};
 use crate::Result;
 use crate::error::Error;
 use crate::executor::{Cx, Echo, call_ok};
@@ -145,11 +146,59 @@ impl Driver for Compose {
         Ok(())
     }
 
-    /// Brings the access service up in its profile, so the initial `up` left it down:
+    /// Hot-adds the attacker box. A manifest machine goes up through its Compose `access` profile
+    /// (the backward-compatible path, [`Compose::attach_profile`]); an ad-hoc box with no machine
+    /// is stood up on the lab's network with no Compose service ([`Compose::attach_adhoc`]).
+    async fn attach(&self, cx: &Cx<'_>, attacker: Attacker<'_>, image: Option<&str>, network: Option<&str>) -> Result<Attached> {
+        match attacker {
+            Attacker::Machine(native) => {
+                self.attach_profile(cx, native, image, network).await?;
+                Ok(Attached::default())
+            }
+            Attacker::AdHoc => self.attach_adhoc(cx, image, network).await,
+        }
+    }
+
+    /// Hot-removes the attacker box: a manifest machine through its profile
+    /// (`docker compose --profile access rm -sf <service>`), an ad-hoc box by `docker rm -f` of
+    /// its container (best effort, idempotent: a box already gone is no error).
+    async fn detach(&self, cx: &Cx<'_>, attacker: Attacker<'_>) -> Result<()> {
+        match attacker {
+            Attacker::Machine(native) => {
+                let args = self.compose_args(cx, &["--profile", access::PROFILE, "rm", "-sf", native])?;
+                call_ok(cx, Op::Detach.as_str(), &docker_spec(cx, args, Vec::new()), CALL_TIMEOUT, Echo::Shown).await?;
+                Ok(())
+            }
+            Attacker::AdHoc => {
+                let name = adhoc::container_name(&self.project(cx)?);
+                drop(self.remove_container(cx, &name).await);
+                Ok(())
+            }
+        }
+    }
+
+    /// The command that opens an interactive shell into the attacker box. A manifest machine is
+    /// addressed by its Compose service (`docker compose … exec <service> bash`); an ad-hoc box by
+    /// its container (`docker exec -it <name> …`, falling back from `bash` to `sh`).
+    fn shell_command(&self, cx: &Cx<'_>, attacker: Attacker<'_>) -> Result<ShellCommand> {
+        let args = match attacker {
+            Attacker::Machine(native) => self.compose_args(cx, &["exec", native, "bash"])?,
+            Attacker::AdHoc => adhoc::shell_args(&adhoc::container_name(&self.project(cx)?)),
+        };
+        Ok(ShellCommand {
+            program: "docker".into(),
+            args,
+            cwd: Some(cx.run.dir().to_path_buf()),
+        })
+    }
+}
+
+impl Compose {
+    /// Brings the manifest's access service up in its profile, so the initial `up` left it down:
     /// `docker compose --profile access up -d --no-deps <service>`, with the picked image in
     /// [`access::IMAGE_ENV`] (the service's `${VAR:-default}` keeps its default otherwise). When a
     /// network is named, the started container is also plugged into it, best effort.
-    async fn attach(&self, cx: &Cx<'_>, native: &str, image: Option<&str>, network: Option<&str>) -> Result<()> {
+    async fn attach_profile(&self, cx: &Cx<'_>, native: &str, image: Option<&str>, network: Option<&str>) -> Result<()> {
         let mut env = Vec::new();
         if let Some(image) = image {
             env.push((access::IMAGE_ENV.to_owned(), image.to_owned()));
@@ -163,26 +212,6 @@ impl Driver for Compose {
         Ok(())
     }
 
-    /// Stops and removes the access service, leaving the rest of the run up:
-    /// `docker compose --profile access rm -sf <service>`.
-    async fn detach(&self, cx: &Cx<'_>, native: &str) -> Result<()> {
-        let args = self.compose_args(cx, &["--profile", access::PROFILE, "rm", "-sf", native])?;
-        call_ok(cx, Op::Detach.as_str(), &docker_spec(cx, args, Vec::new()), CALL_TIMEOUT, Echo::Shown).await?;
-        Ok(())
-    }
-
-    /// `docker compose … exec <service> bash`: Compose addresses the box by service, so no
-    /// container name is reconstructed. `exec` is interactive with a TTY by default.
-    fn shell_command(&self, cx: &Cx<'_>, native: &str) -> Result<ShellCommand> {
-        Ok(ShellCommand {
-            program: "docker".into(),
-            args: self.compose_args(cx, &["exec", native, "bash"])?,
-            cwd: Some(cx.run.dir().to_path_buf()),
-        })
-    }
-}
-
-impl Compose {
     /// Plugs the just-started access container into the lab network `network` (its project
     /// network), best effort: a box already on it, or a network it can't name, is left as it is.
     async fn connect_network(&self, cx: &Cx<'_>, native: &str, network: &str) {

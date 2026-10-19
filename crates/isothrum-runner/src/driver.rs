@@ -35,6 +35,31 @@ pub(crate) struct Observed {
     pub(crate) sensitive: std::collections::BTreeSet<String>,
 }
 
+/// Which attacker box a hot-add acts on: the manifest's on-demand access machine when the lab
+/// declares one, or an ad-hoc box the driver stands up itself with no machine behind it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Attacker<'a> {
+    /// The manifest's on-demand access machine, by the native name its engine addresses it by
+    /// (the Compose service, the Vagrant define). The initial `up` left it down.
+    Machine(&'a str),
+    /// No machine: the driver makes an attacker box ad hoc on the lab's network. Docker only; the
+    /// VM and cloud drivers refuse it (`unsupported`) for now.
+    AdHoc,
+}
+
+/// Where a hot-added attacker box can be reached, as the driver stood it up. Filled for an ad-hoc
+/// box the driver named and inspected; left empty for a manifest machine, whose identity and
+/// address the caller already reads from the manifest.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Attached {
+    /// The engine name the box came up under (an ad-hoc container's name).
+    pub(crate) name: Option<String>,
+    /// The lab network it landed on (the spec name).
+    pub(crate) network: Option<String>,
+    /// Its address on that network.
+    pub(crate) address: Option<String>,
+}
+
 /// A driver. Internal and statically dispatched (`async fn`, not object safe by design).
 pub(crate) trait Driver {
     /// Refuses a start this driver can see won't work, before anything is created (Vagrant: a
@@ -51,14 +76,16 @@ pub(crate) trait Driver {
     async fn observe(&self, cx: &Cx<'_>) -> Result<Observed>;
     /// Clears the run's state after a successful `down` (Compose: no pins left).
     fn after_down(&self, cx: &Cx<'_>) -> Result<()>;
-    /// Hot-adds the on-demand access machine `native` into the running run: brings it up with the
-    /// learner-picked `image` (else its baked default), on `network` when given.
-    async fn attach(&self, cx: &Cx<'_>, native: &str, image: Option<&str>, network: Option<&str>) -> Result<()>;
-    /// Hot-removes the access machine `native` from the running run.
-    async fn detach(&self, cx: &Cx<'_>, native: &str) -> Result<()>;
-    /// The argv that opens an interactive shell into the access machine `native`. A pure query:
-    /// no process runs here, the embedder runs what it returns in its own terminal.
-    fn shell_command(&self, cx: &Cx<'_>, native: &str) -> Result<ShellCommand>;
+    /// Hot-adds the attacker box into the running run: an [`Attacker::Machine`] the manifest
+    /// declares (brought up with the learner-picked `image`, else its baked default, on `network`
+    /// when given), or an [`Attacker::AdHoc`] box the driver stands up itself with no machine
+    /// behind it. Reports where an ad-hoc box can be reached ([`Attached`], empty for a machine).
+    async fn attach(&self, cx: &Cx<'_>, attacker: Attacker<'_>, image: Option<&str>, network: Option<&str>) -> Result<Attached>;
+    /// Hot-removes the attacker box from the running run.
+    async fn detach(&self, cx: &Cx<'_>, attacker: Attacker<'_>) -> Result<()>;
+    /// The argv that opens an interactive shell into the attacker box. A pure query: no process
+    /// runs here, the embedder runs what it returns in its own terminal.
+    fn shell_command(&self, cx: &Cx<'_>, attacker: Attacker<'_>) -> Result<ShellCommand>;
 }
 
 /// The driver a manifest names.
@@ -165,29 +192,29 @@ impl AnyDriver {
         }
     }
 
-    pub(crate) async fn attach(&self, cx: &Cx<'_>, native: &str, image: Option<&str>, network: Option<&str>) -> Result<()> {
+    pub(crate) async fn attach(&self, cx: &Cx<'_>, attacker: Attacker<'_>, image: Option<&str>, network: Option<&str>) -> Result<Attached> {
         let span = tracing::debug_span!("driver", driver = self.name(), op = "attach");
         match self {
-            AnyDriver::Compose(d) => d.attach(cx, native, image, network).instrument(span).await,
-            AnyDriver::Vagrant(d) => d.attach(cx, native, image, network).instrument(span).await,
-            AnyDriver::Terraform(d) => d.attach(cx, native, image, network).instrument(span).await,
+            AnyDriver::Compose(d) => d.attach(cx, attacker, image, network).instrument(span).await,
+            AnyDriver::Vagrant(d) => d.attach(cx, attacker, image, network).instrument(span).await,
+            AnyDriver::Terraform(d) => d.attach(cx, attacker, image, network).instrument(span).await,
         }
     }
 
-    pub(crate) async fn detach(&self, cx: &Cx<'_>, native: &str) -> Result<()> {
+    pub(crate) async fn detach(&self, cx: &Cx<'_>, attacker: Attacker<'_>) -> Result<()> {
         let span = tracing::debug_span!("driver", driver = self.name(), op = "detach");
         match self {
-            AnyDriver::Compose(d) => d.detach(cx, native).instrument(span).await,
-            AnyDriver::Vagrant(d) => d.detach(cx, native).instrument(span).await,
-            AnyDriver::Terraform(d) => d.detach(cx, native).instrument(span).await,
+            AnyDriver::Compose(d) => d.detach(cx, attacker).instrument(span).await,
+            AnyDriver::Vagrant(d) => d.detach(cx, attacker).instrument(span).await,
+            AnyDriver::Terraform(d) => d.detach(cx, attacker).instrument(span).await,
         }
     }
 
-    pub(crate) fn shell_command(&self, cx: &Cx<'_>, native: &str) -> Result<ShellCommand> {
+    pub(crate) fn shell_command(&self, cx: &Cx<'_>, attacker: Attacker<'_>) -> Result<ShellCommand> {
         match self {
-            AnyDriver::Compose(d) => d.shell_command(cx, native),
-            AnyDriver::Vagrant(d) => d.shell_command(cx, native),
-            AnyDriver::Terraform(d) => d.shell_command(cx, native),
+            AnyDriver::Compose(d) => d.shell_command(cx, attacker),
+            AnyDriver::Vagrant(d) => d.shell_command(cx, attacker),
+            AnyDriver::Terraform(d) => d.shell_command(cx, attacker),
         }
     }
 }
