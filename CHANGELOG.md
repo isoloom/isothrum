@@ -8,6 +8,17 @@ Isothrum is the runner (crate and CLI) and the lab-model compiler (drawing → s
 plus its WASM build. It executes what Isoloom generates; it is shared by the Isothrum
 desktop app, the isothrum.com editor and the Cyber CTF launcher.
 
+## [1.0.1] — 2026-10-19
+
+### Added
+
+- The runner can hot-add the learner's attacker box to a running Compose lab that
+  declares no on-demand access machine: it starts an ad-hoc container (the learner's
+  image, else the default Kali image) on the lab network, reports its address, and
+  removes it on detach. A lab that still declares an on-demand access machine keeps
+  the existing Compose `access`-profile behavior. Vagrant and cloud targets are
+  unchanged (ad-hoc attach there is not yet supported).
+
 ## [1.0.0] — 2026-10-18
 
 The first stable release, paired with Isoloom 1.0. The `0.11.x` series on crates.io
